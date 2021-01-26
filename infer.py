@@ -276,6 +276,7 @@ def main(argv):
             for met_key in iter_metrics.keys():
                 log_metrics[met_key] = iter_metrics[met_key]/log_count
             log_metrics['meta_norm'] = meta_norm/(log_count/FLAGS.meta_batch_size)
+            meta_norm = 0.
             wandb.log(log_metrics)
             print("Train iteration {}:".format(train_iter),log_metrics)
 
