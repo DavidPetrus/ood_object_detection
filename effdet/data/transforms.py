@@ -82,13 +82,13 @@ class ResizePad:
     def __call__(self, img, anno: dict):
         width, height = img.size
 
-        img_scale_y = self.target_size[0] / height
-        img_scale_x = self.target_size[1] / width
+        img_scale_y = anno['target_size'] / height
+        img_scale_x = anno['target_size'] / width
         img_scale = min(img_scale_y, img_scale_x)
         scaled_h = int(height * img_scale)
         scaled_w = int(width * img_scale)
 
-        new_img = Image.new("RGB", (self.target_size[1], self.target_size[0]), color=self.fill_color)
+        new_img = Image.new("RGB", (anno['target_size'], anno['target_size']), color=self.fill_color)
         interp_method = _pil_interp(self.interpolation)
         img = img.resize((scaled_w, scaled_h), interp_method)
         new_img.paste(img)
@@ -122,8 +122,8 @@ class RandomResizePad:
     def _get_params(self, img):
         # Select a random scale factor.
         scale_factor = random.uniform(*self.scale)
-        scaled_target_height = scale_factor * self.target_size[0]
-        scaled_target_width = scale_factor * self.target_size[1]
+        scaled_target_height = scale_factor * anno['target_size']
+        scaled_target_width = scale_factor * anno['target_size']
 
         # Recompute the accurate scale_factor using rounded scaled image size.
         width, height = img.size
@@ -134,8 +134,8 @@ class RandomResizePad:
         # Select non-zero random offset (x, y) if scaled image is larger than target size
         scaled_h = int(height * img_scale)
         scaled_w = int(width * img_scale)
-        offset_y = scaled_h - self.target_size[0]
-        offset_x = scaled_w - self.target_size[1]
+        offset_y = scaled_h - anno['target_size']
+        offset_x = scaled_w - anno['target_size']
         offset_y = int(max(0.0, float(offset_y)) * random.uniform(0, 1))
         offset_x = int(max(0.0, float(offset_x)) * random.uniform(0, 1))
         return scaled_h, scaled_w, offset_y, offset_x, img_scale
@@ -148,9 +148,9 @@ class RandomResizePad:
         else:
             interpolation = self.interpolation
         img = img.resize((scaled_w, scaled_h), interpolation)
-        right, lower = min(scaled_w, offset_x + self.target_size[1]), min(scaled_h, offset_y + self.target_size[0])
+        right, lower = min(scaled_w, offset_x + anno['target_size']), min(scaled_h, offset_y + anno['target_size'])
         img = img.crop((offset_x, offset_y, right, lower))
-        new_img = Image.new("RGB", (self.target_size[1], self.target_size[0]), color=self.fill_color)
+        new_img = Image.new("RGB", (anno['target_size'], anno['target_size']), color=self.fill_color)
         new_img.paste(img)
 
         if 'bbox' in anno:

@@ -649,12 +649,25 @@ class EfficientDet(nn.Module):
         self.box_net.toggle_bn_level_first()
 
     def forward(self, x, mode='full_net'):
-        if mode=='support':
+        if mode=='supp_cls':
             anchor_inps, x_class = self.class_net(x,ret_activs=True,level_offset=FLAGS.supp_level_offset)
-            #for level in range(config.num_levels):
-            #    target_mul.append(self.anchor_net(activs[level]).sigmoid())
             return x_class, anchor_inps
-        elif mode=='fpn_head':
+        elif mode=='supp_bb':
+            x = self.backbone(x)
+            activs = self.fpn(x)
+            return activs
+        elif mode=='bb':
+            feats = self.backbone(x)
+            return feats
+        elif mode=='not_cls':
+            activs = self.fpn(x)
+            x_box = self.box_net(activs)
+            return activs, x_box
+        elif mode=='qry_cls':
+            x_class = self.class_net(x)
+            return x_class
+        elif mode=='full_net':
+            x = self.backbone(x)
             activs = self.fpn(x)
             x_class = self.class_net(activs)
             x_box = self.box_net(activs)
@@ -670,9 +683,7 @@ class EfficientDet(nn.Module):
             feats = self.backbone(x)
             activs = self.fpn(feats)
             return feats,activs
-        elif mode=='bb':
-            feats = self.backbone(x)
-            return feats
+        
 
 
         '''if mode=='fpn':

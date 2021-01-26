@@ -25,32 +25,20 @@ random.seed(time.time())
 INP_SIZE = 256
 
 
-lvis_sample = {}
-web_sample = {}
-lvis_bboxes = {}
-lvis_cats = {}
-
-lvis_sample_load = defaultdict(dict)
-web_sample_load = defaultdict(dict)
-lvis_val_load = defaultdict(dict)
-lvis_img_size_load = {}
-load_cats = []
-lvis_train_cats = []
-lvis_val_cats = []
-
-
 class MetaEpicDataset(torch.utils.data.IterableDataset):
 
-    def __init__(self,model_config,n_way,num_sup,num_qry):
-        global lvis_sample
+    def __init__(self,model_config,n_way,num_sup,num_qry,lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats):
+        self.lvis_sample = lvis_sample
+        self.web_sample = web_sample
+        self.lvis_bboxes = lvis_bboxes
+        self.lvis_cats = lvis_cats
+        self.lvis_train_cats = lvis_train_cats
+        self.lvis_val_cats = lvis_val_cats
+        self.lvis_img_size_load = {}
 
         self.n_way = n_way
         self.num_sup = num_sup
         self.num_qry = num_qry
-
-        self.preload_count = 0
-
-        self.web_sample = {}
 
         if FLAGS.large_qry:
             self.qry_img_size = 640
@@ -69,312 +57,128 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
         else:
             self.feat_dir = 'train_activ'
 
+        self.val_freq = int(FLAGS.val_freq/FLAGS.num_workers)
+        self.num_val_cats = int(FLAGS.num_val_cats/FLAGS.num_workers)
+        self.exp = FLAGS.exp
+        self.n_way = FLAGS.n_way
+        self.num_workers = FLAGS.num_workers
+
         self.anchors = Anchors.from_config(model_config)#.to('cuda:0', non_blocking=True)
         self.anchor_labeler = AnchorLabeler(self.anchors, self.n_way, match_threshold=0.5)
 
         self.transform = transforms_coco_eval(self.qry_img_size,interpolation='bilinear',use_prefetcher=True)
 
     def __iter__(self):
-        global lvis_sample
-        global web_sample
-        global lvis_bboxes
-        global lvis_cats
-        global lvis_sample_load
-        global lvis_val_load
-        global web_sample_load
-        global lvis_img_size_load
-        global load_cats
-        global lvis_train_cats
-        global lvis_val_cats
-
         val_count = 1
         num_val_iters = 0
         val_iter = False
-        preload_task = False
 
         for i in range(1000000):
-            # 000000425207_activ5.npy
-            if not val_iter:
-                if FLAGS.num_preloads > 0:
-                    num_loaded = sum([len(lvis_sample_load[cat]) for cat in lvis_sample_load.keys()])
-                    if num_loaded >= FLAGS.max_lvis_load and self.preload_count < FLAGS.num_preloads*FLAGS.max_lvis_load/(FLAGS.n_way*FLAGS.num_qry):
-                        preload_task = True
-                        self.preload_count += 1
-                    else:
-                        preload_task = False
-                        if num_loaded >= FLAGS.max_lvis_load:
-                            lvis_sample_load = None
-                            load_cats = []
-                            gc.collect()
-                            lvis_sample_load = defaultdict(dict)
-                            self.preload_count = 0
-                else:
-                    preload_task = False
-                    lvis_sample_load = defaultdict(dict)
-                    web_sample_load = defaultdict(dict)
-
-            
-            if (not val_iter and val_count % FLAGS.val_freq == 0):
+            if (not val_iter and val_count % self.val_freq == 0):
                 val_iter = True
                 val_count += 1
-            elif val_iter and num_val_iters < FLAGS.num_val_cats:
+            elif val_iter and num_val_iters < self.num_val_cats:
                 num_val_iters += 1
             else:
                 val_iter = False
                 num_val_iters = 0
                 val_count += 1
 
-            if preload_task:
-                start = time.time()
-                load_cats = random.sample(lvis_train_cats,FLAGS.num_preload_cats)
-                lvis_sample_load = defaultdict(dict)
-                for cat in web_sample_load.keys():
-                    if cat not in load_cats:
-                        del web_sample_load[cat]
-
-                for cat in load_cats:
-                    if cat not in web_sample_load.keys():
-                        for supp in web_sample[cat].keys():
-                            img_base = supp[:-5]
-                            activs = []
-                            web_sample_load[cat][supp] = []
-                            for level in self.levels:
-                                np_load = np.load(img_base+str(level)+'.npy')
-                                if np_load.dtype == np.float32:
-                                    np.save(img_base+str(level)+'.npy',np_load.astype(np.float16))
-                                else:
-                                    np_load = np_load
-                                web_sample_load[cat][supp].append(np_load.astype(np.float16))
-
-                    add_imgs = random.sample(lvis_sample[cat],int(FLAGS.max_lvis_load/FLAGS.num_preload_cats))
-                    for img_path in add_imgs:
-                        lvis_sample_load[cat][img_path] = []
-                        for level in self.levels:
-                            np_load = np.load(img_path.replace('train2017',self.feat_dir+'_{}'.format(self.qry_img_size))
-                                .replace('.jpg','_'+self.feats+str(level)+'.npy'))
-                            if np_load.dtype == np.float32:
-                                np.save(img_path.replace('train2017',self.feat_dir+'_{}'.format(self.qry_img_size))
-                                    .replace('.jpg','_'+self.feats+str(level)+'.npy'),np_load.astype(np.float16))
-                            else:
-                                np_load = np_load
-                            lvis_sample_load[cat][img_path].append(np_load.astype(np.float16))
-                print("Preload took:",time.time()-start)
-
 
             support_img_batch = []
             support_lab_batch = []
             query_img_batch = []
             query_lab_batch = []
-            supp_bbox_ls = []
             supp_cls_lab = []
             qry_bbox_ls = []
             qry_cls_ls = []
             if val_iter:
-                task_cats = random.sample(lvis_val_cats,self.n_way)
+                task_cats = random.sample(self.lvis_val_cats,self.n_way)
             else:
-                task_cats = random.sample(load_cats,self.n_way)
+                task_cats = random.sample(self.lvis_train_cats,self.n_way)
 
-            all_found = True
-            print("Val:",val_iter,task_cats)
-            #try:
-            for cat_ix,cat in enumerate(task_cats):
-                if preload_task and not val_iter:
-                    support_imgs = random.sample(list(web_sample_load[cat]),self.num_sup)
-                else:
-                    support_imgs = random.sample(web_sample[cat],self.num_sup)
+            print("Val:",val_iter,task_cats,i,val_count)
+            try:
+                for cat_ix,cat in enumerate(task_cats):
+                    support_imgs = random.sample(list(self.web_sample[cat]),self.num_sup)
+                    for img_path in support_imgs:
+                        img_load = Image.open(img_path).convert('RGB')
+                        width,height = img_load.size
+                        img_trans,_ = self.transform(img_load,{'target_size':256})
+                        support_img_batch.append(torch.from_numpy(img_trans))
+                        img_cat = task_cats.index(cat)
+                        supp_cls_lab.append(img_cat)
 
-                for supp in support_imgs:
-                    img_base = supp[:-5]
-                    img_cat = task_cats.index(cat)
-                    activs = []
-                    if (not preload_task or val_iter) and supp not in web_sample_load[cat].keys():
-                        web_sample_load[cat][supp] = []
-                        for level in self.levels:
-                            np_load = np.load(img_base+str(level)+'.npy')
-                            if np_load.dtype == np.float32:
-                                np.save(img_base+str(level)+'.npy',np_load.astype(np.float16))
-                            else:
-                                np_load = np_load
-                            web_sample_load[cat][supp].append(np_load.astype(np.float16))
-                    for activ in web_sample_load[cat][supp]:
-                        activs.append(torch.from_numpy(activ.astype(np.float32)))#.cuda(non_blocking=True))
-                    support_img_batch.append(activs)
-                    supp_cls_lab.append(img_cat)#.cuda(non_blocking=True))
+                    query_imgs = random.sample(list(self.lvis_sample[cat]),self.num_qry)
 
-                try:
-                    if val_iter:
-                        if len(lvis_val_load[cat]) == 0:
-                            query_imgs = random.sample(lvis_sample[cat],FLAGS.num_val_imgs)
-                            for img_path in query_imgs:
-                                lvis_val_load[cat][img_path] = []
-                                for level in self.levels:
-                                    np_load = np.load(img_path.replace('train2017', self.feat_dir+'_{}'.format(self.qry_img_size))
-                                        .replace('.jpg','_'+self.feats+str(level)+'.npy'))
-                                    if np_load.dtype == np.float32:
-                                        np.save(img_path.replace('train2017',self.feat_dir+'_{}'.format(self.qry_img_size))
-                                            .replace('.jpg','_'+self.feats+str(level)+'.npy'),np_load.astype(np.float16))
-                                    else:
-                                        np_load = np_load
-                                    lvis_val_load[cat][img_path].append(np_load.astype(np.float16))
-                        query_imgs = random.sample(list(lvis_val_load[cat]),self.num_qry)
-                    elif preload_task:
-                        if len(lvis_sample_load[cat]) < self.num_qry:
-                            add_imgs = random.sample(lvis_sample[cat],self.num_qry-len(lvis_sample_load[cat]))
-                            for img_path in add_imgs:
-                                lvis_sample_load[cat][img_path] = []
-                                for level in self.levels:
-                                    np_load = np.load(img_path.replace('train2017',self.feat_dir+'_{}'.format(self.qry_img_size))
-                                        .replace('.jpg','_'+self.feats+str(level)+'.npy'))
-                                    if np_load.dtype == np.float32:
-                                        np.save(img_path.replace('train2017',self.feat_dir+'_{}'.format(self.qry_img_size))
-                                            .replace('.jpg','_'+self.feats+str(level)+'.npy'),np_load.astype(np.float16))
-                                    else:
-                                        np_load = np_load
-                                    lvis_sample_load[cat][img_path].append(np_load.astype(np.float16))
-                        query_imgs = random.sample(list(lvis_sample_load[cat]),self.num_qry)
-                    else:
-                        query_imgs = random.sample(lvis_sample[cat],self.num_qry)
-                except Exception as e:
-                    print(cat)
-                    print('error:',e)
-                    all_found = False
-                    break
+                    for img_path in query_imgs:
+                        cat_idxs = []
+                        for lv_ix,lv_cat in enumerate(self.lvis_cats[img_path]):
+                            if lv_cat in task_cats: cat_idxs.append(lv_ix)
 
-                for img_path in query_imgs:
-                    cat_idxs = []
-                    for lv_ix,lv_cat in enumerate(lvis_cats[img_path]):
-                        if lv_cat in task_cats: cat_idxs.append(lv_ix)
+                        img_bboxes = np.asarray(self.lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
+                        img_bboxes[:,2:] = img_bboxes[:,:2]+img_bboxes[:,2:]
+                        img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
+                        
+                        img_cats = np.asarray(self.lvis_cats[img_path])[cat_idxs]
+                        img_cat_ids = []
+                        for a_ix in range(len(img_cats)): img_cat_ids.append(task_cats.index(img_cats[a_ix]))
+                        img_cat_ids = np.array(img_cat_ids)
 
-                    img_bboxes = np.asarray(lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
-                    img_bboxes[:,2:] = img_bboxes[:,:2]+img_bboxes[:,2:]
-                    # Convert xyxy to yxyx
-                    '''temp = img_bboxes[:,0].copy()
-                    img_bboxes[:,0] = img_bboxes[:,1]
-                    img_bboxes[:,1] = temp
-                    temp = img_bboxes[:,2].copy()
-                    img_bboxes[:,2] = img_bboxes[:,3]
-                    img_bboxes[:,3] = temp'''
-                    img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
-                    
-                    img_cats = np.asarray(lvis_cats[img_path])[cat_idxs]
-                    img_cat_ids = []
-                    for a_ix in range(len(img_cats)): img_cat_ids.append(task_cats.index(img_cats[a_ix]))
-                    img_cat_ids = np.array(img_cat_ids)
+                        target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
+                        img_load = Image.open(img_path).convert('RGB')
+                        img_trans,target = self.transform(img_load,target)
 
-                    target = {'bbox': img_bboxes, 'cls': img_cat_ids}
-                    #img_load = Image.open(img_path.replace('petrus','ubuntu')).convert('RGB')
-                    #img_trans,target = self.transform(img_load,target)
-                    #query_img_batch.append(img_trans)
-                    if (not preload_task or val_iter) and img_path not in lvis_img_size_load.keys():
-                        if FLAGS.ubuntu:
-                            img_size_load = np.load(img_path.replace('train2017',self.feat_dir+'_640').replace('.jpg','size.npy'))
-                        else:
-                            img_size_load = np.load(img_path.replace('train2017',self.feat_dir+'_256').replace('.jpg','size.npy'))
-                        lvis_img_size_load[img_path] = img_size_load
-                    width,height = lvis_img_size_load[img_path][0],lvis_img_size_load[img_path][1]
-                    img_scale_y = self.qry_img_size / height
-                    img_scale_x = self.qry_img_size / width
-                    img_scale = min(img_scale_y, img_scale_x)
-                    scaled_h = int(height * img_scale)
-                    scaled_w = int(width * img_scale)
-                    bbox = target['bbox']
-                    bbox[:, :4] *= img_scale
-                    clip_boxes_(bbox, (scaled_h, scaled_w))
-                    valid_indices = (bbox[:, :2] < bbox[:, 2:4]).all(axis=1)
-                    target['bbox'] = bbox[valid_indices, :]
-                    target['cls'] = target['cls'][valid_indices]
-                    activs = []
-                    if not val_iter and not preload_task and img_path not in lvis_sample_load[cat].keys():
-                        lvis_sample_load[cat][img_path] = []
-                        for level in self.levels:
-                            np_load = np.load(img_path.replace('train2017',self.feat_dir+'_{}'.format(self.qry_img_size))
-                                .replace('.jpg','_'+self.feats+str(level)+'.npy'))
-                            if np_load.dtype == np.float32:
-                                np.save(img_path.replace('train2017',self.feat_dir+'_{}'.format(self.qry_img_size))
-                                    .replace('.jpg','_'+self.feats+str(level)+'.npy'),np_load.astype(np.float16))
-                            else:
-                                np_load = np_load
-                            lvis_sample_load[cat][img_path].append(np_load.astype(np.float16))
-                    if val_iter:
-                        for activ in lvis_val_load[cat][img_path]:
-                            activs.append(torch.from_numpy(activ.astype(np.float32)))#.cuda(non_blocking=True))
-                        query_img_batch.append(activs)
-                    else:
-                        for activ in lvis_sample_load[cat][img_path]:
-                            activs.append(torch.from_numpy(activ.astype(np.float32)))#.cuda(non_blocking=True))
-                        query_img_batch.append(activs)
+                        query_img_batch.append(torch.from_numpy(img_trans))
+                        qry_bbox_ls.append(torch.from_numpy(target['bbox']))#.cuda(non_blocking=True))
+                        qry_cls_ls.append(torch.from_numpy(target['cls']+1))#.cuda(non_blocking=True))
 
-                    qry_bbox_ls.append(torch.from_numpy(target['bbox']))#.cuda(non_blocking=True))
-                    qry_cls_ls.append(torch.from_numpy(target['cls']+1))#.cuda(non_blocking=True))
-
-            #except Exception as e:
-            #    with open(FLAGS.exp+'dataloader.txt','a') as fp:
-            #        fp.write(str(e))
-            #    print("!!!!!!!!!!!!!!!!!!!!!!!",e)
-            #    continue
-
-            if not all_found: continue
+            except Exception as e:
+                with open(self.exp+'dataloader.txt','a') as fp:
+                    fp.write(str(e))
+                print("!!!!!!!!!!!!!!!!!!!!!!!",e)
+                continue
 
             supp_tup = list(zip(support_img_batch,supp_cls_lab))
             random.shuffle(supp_tup)
             support_img_batch,supp_cls_lab = zip(*supp_tup)
-            supp_cls_lab = F.one_hot(torch.LongTensor(supp_cls_lab),num_classes=FLAGS.n_way)
+            supp_cls_lab = F.one_hot(torch.LongTensor(supp_cls_lab),num_classes=self.n_way)
 
             qry_tup = list(zip(query_img_batch,qry_bbox_ls,qry_cls_ls))
             random.shuffle(qry_tup)
             query_img_batch,qry_bbox_ls,qry_cls_ls = zip(*qry_tup)
-            if FLAGS.fpn and len(query_img_batch[0]) != 3:
-                print(task_cats)
-                print(query_imgs)
-                print(query_img_batch)
-                print("--------------------")
-                with open(FLAGS.exp+'dataloader.txt','a') as fp:
-                    for img in query_imgs:
-                        fp.write(img)
-                continue
-            elif not FLAGS.fpn and len(query_img_batch[0]) != 5:
-                print(task_cats)
-                print(query_imgs)
-                print(query_img_batch)
-                print("--------------------")
-                with open(FLAGS.exp+'dataloader.txt','a') as fp:
-                    for img in query_imgs:
-                        fp.write(img)
-                continue
 
             q_cls_targets, q_box_targets, q_num_positives = self.anchor_labeler.batch_label_anchors(qry_bbox_ls, qry_cls_ls)
             query_lab_batch = {'cls':qry_cls_ls, 'bbox': qry_bbox_ls, 'cls_anchor':q_cls_targets, 'bbox_anchor':q_box_targets, 'num_positives':q_num_positives}
 
-            if not FLAGS.large_qry:
-                try:
-                    list(map(torch.stack, zip(*query_img_batch)))
-                except Exception as e:
-                    print(e)
-                    for qry in query_img_batch:
-                        print('--------')
-                        for q in qry:
-                            print(q.shape)
-                    continue
-
-            yield list(map(torch.stack, zip(*support_img_batch))), supp_cls_lab, list(map(torch.stack, zip(*query_img_batch))), query_lab_batch, task_cats, preload_task, val_iter
+            #yield list(map(torch.stack, zip(*support_img_batch))), supp_cls_lab, list(map(torch.stack, zip(*query_img_batch))), query_lab_batch, task_cats, val_iter
+            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, task_cats, val_iter
 
 
 def load_metadata_dicts():
-    global lvis_sample
-    global web_sample
-    global lvis_bboxes
-    global lvis_cats
-    global lvis_train_cats
-    global lvis_val_cats
 
     if FLAGS.ubuntu:
         base_path = "/home/ubuntu/"
+        feat_dir = 'train_feats'
     else:
         base_path = '/home-mscluster/dvanniekerk/'
+        feat_dir = 'train_activ'
+
+    if FLAGS.fpn:
+        levels = [3,4,5]
+        feats = 'feat'
+    else:
+        levels = [3,4,5,6,7]
+        feats = 'activ'
+
+    if FLAGS.large_qry:
+        qry_img_size = 640
+    else:
+        qry_img_size = 256
 
     start = time.time()
 
-    cats_not_to_incl = ['peach','yogurt','crumb']
+    cats_not_to_incl = ['peach','yogurt','crumb','stirrup','hook']
 
     lvis_all_cats = {}
     with open(base_path+"LVIS/lvis_train_cats.csv",'r') as fp:
@@ -405,47 +209,44 @@ def load_metadata_dicts():
     for line in lines:
         splits = line.split(';')
         if splits[0] not in lvis_train_cats and splits[0] not in lvis_val_cats: continue
-        if FLAGS.fpn and FLAGS.large_qry:
-            cat_imgs = []
-            imgs = ast.literal_eval(splits[1])
-            for img in set(imgs):
-                #if not os.path.exists(img.replace('train2017','train_activ_640').replace('.jpg','_feat5.npy')):
-                #    continue
-                add_to_sample = True
-                if splits[0] in lvis_train_cats:
-                    set_cats = set(lvis_cats[img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')]) if FLAGS.ubuntu else set(lvis_cats[img])
-                    for img_cat in set_cats:
-                        if img_cat in lvis_val_cats:
-                            add_to_sample = False
+        #if FLAGS.fpn and FLAGS.large_qry:
+        cat_imgs = []
+        imgs = ast.literal_eval(splits[1])
+        for img in set(imgs):
+            #if not os.path.exists(img.replace('train2017','train_activ_640').replace('.jpg','_feat5.npy')):
+            #    continue
+            add_to_sample = True
+            if splits[0] in lvis_train_cats:
+                set_cats = set(lvis_cats[img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')]) if FLAGS.ubuntu else set(lvis_cats[img])
+                for img_cat in set_cats:
+                    if img_cat in lvis_val_cats:
+                        add_to_sample = False
 
-                if add_to_sample:
-                    added += 1
-                else:
-                    not_added += 1
-                    continue
+            if add_to_sample:
+                added += 1
+            else:
+                not_added += 1
+                continue
 
-                if FLAGS.ubuntu:
-                    cat_imgs.append(img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/').replace('train_activ','train_feats'))
-                else:
-                    cat_imgs.append(img)
-            lvis_sample[splits[0]] = cat_imgs
-        else:
-            lvis_sample[splits[0]] = ast.literal_eval(splits[1])
+            if FLAGS.ubuntu:
+                cat_imgs.append(img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/'))
+            else:
+                cat_imgs.append(img)
+        lvis_sample[splits[0]] = cat_imgs
+        #else:
+        #    lvis_sample[splits[0]] = ast.literal_eval(splits[1])
     
-
+    web_sample = {}
     for cat in lvis_sample.keys():
-        if FLAGS.fpn:
-            web_sample[cat] = glob.glob(base_path+"LVIS/support_dataset/support_features/"+cat.replace('_',' ')+"/*feat5.npy")
-        else:
-            web_sample[cat] = glob.glob(base_path+"LVIS/support_dataset/support_features/"+cat.replace('_',' ')+"/*activ7.npy")
+        web_sample[cat] = glob.glob(base_path+"web_images/"+cat.replace('_',' ')+"/*")
 
     print(len(lvis_sample.keys()))
     print(added)
     print(not_added)
+
     print(time.time()-start)
 
-    #return lvis_sample,lvis_bboxes,lvis_cats
-    return
+    return lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats
 
 #colors = [(255,0,0),(0,255,0),(0,0,255),(255,0,255),(0,255,255)]
 #count = 0

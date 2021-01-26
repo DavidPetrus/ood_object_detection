@@ -30,23 +30,26 @@ import wandb
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string('exp','','')
-flags.DEFINE_bool('ubuntu',False,'')
+flags.DEFINE_bool('ubuntu',True,'')
 
 flags.DEFINE_integer('log_freq',50,'')
 flags.DEFINE_integer('num_workers',0,'')
-flags.DEFINE_integer('max_lvis_load',2000,'')
-flags.DEFINE_integer('num_preloads',30,'')
+flags.DEFINE_integer('max_lvis_load',4000,'')
+flags.DEFINE_integer('num_preloads',5,'')
 flags.DEFINE_integer('num_preload_cats',100,'')
-flags.DEFINE_integer('val_freq',100,'')
+flags.DEFINE_integer('num_train_cats',250,'')
 flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('num_val_imgs',20,'')
+flags.DEFINE_integer('val_freq',100,'')
 flags.DEFINE_integer('n_way',2,'')
 flags.DEFINE_integer('num_sup',25,'')
 flags.DEFINE_integer('num_qry',10,'')
 flags.DEFINE_integer('meta_batch_size',2,'')
 flags.DEFINE_integer('img_size',256,'')
-flags.DEFINE_integer('num_train_cats',250,'')
 
+flags.DEFINE_string('optim','adam','')
+flags.DEFINE_bool('train_bb',True,'')
+flags.DEFINE_bool('track_bb_grad',True,'')
 flags.DEFINE_bool('fpn',True,'')
 flags.DEFINE_bool('large_qry',True,'')
 flags.DEFINE_bool('train_mode',True,'')
@@ -120,30 +123,32 @@ def main(argv):
 
     anchors = Anchors.from_config(model_config).to('cuda')
 
-    load_metadata_dicts()
-    dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry)
+    lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
+    dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
 
     loss_fn = DetectionLoss(model_config)
     support_loss_fn = SupportLoss(model_config)
 
 
-    #IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
-    #IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
-    #imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
-    #imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
+    IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
+    IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
+    imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
+    imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
     model.to('cuda')
     if not FLAGS.train_mode:
         model.eval()
 
     anchor_net.to('cuda')
 
-    if FLAGS.fpn:
-        meta_optimizer = torch.optim.Adam([{'params': model.class_net.parameters()},{'params': model.box_net.parameters()}, \
-            {'params': model.fpn.parameters()},{'params': anchor_net.parameters()}], lr=FLAGS.meta_lr)
-    else:
-        meta_optimizer = torch.optim.Adam([{'params': model.class_net.parameters()},{'params': model.box_net.parameters()}, \
-            {'params': anchor_net.parameters()}], lr=FLAGS.meta_lr)
+    #if FLAGS.fpn:
+    if FLAGS.optim == 'adam':
+        meta_optimizer = torch.optim.Adam([{'params': model.parameters()},{'params': anchor_net.parameters()}], lr=FLAGS.meta_lr)
+    elif FLAGS.optim == 'nesterov':
+        meta_optimizer = torch.optim.SGD([{'params': model.parameters()},{'params': anchor_net.parameters()}], lr=FLAGS.meta_lr, momentum=0.9, nesterov=True)
+    #else:
+    #    meta_optimizer = torch.optim.Adam([{'params': model.class_net.parameters()},{'params': model.box_net.parameters()}, \
+    #        {'params': anchor_net.parameters()}], lr=FLAGS.meta_lr)
     #meta_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     #wandb.watch(model)
@@ -157,143 +162,140 @@ def main(argv):
     train_iter = 0
     log_count = 0
     prev_val_iter = False
+    meta_norm = 0.
     for task in loader:
         if t_ix == 0: meta_optimizer.zero_grad()
 
         evaluator.clear()
         
         #supp_imgs, supp_labs, qry_imgs, qry_labs = task
-        supp_activs_load, supp_cls_labs, qry_activs_load, qry_labs, task_cats, preload_task, val_iter = task
-
-        if not val_iter:
-            prev_preload = preload_task
+        supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
 
         #inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=0.001)
         inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=FLAGS.inner_lr)
 
-        supp_activs = [activ.to('cuda:0') for activ in supp_activs_load]
         supp_cls_labs = supp_cls_labs.to('cuda')
-
-        qry_activs = [activ.to('cuda:0') for activ in qry_activs_load]
         qry_cls_anchors = [cls_anchor.to('cuda:0') for cls_anchor in qry_labs['cls_anchor']]
         qry_bbox_anchors = [bbox_anchor.to('cuda:0') for bbox_anchor in qry_labs['bbox_anchor']]
         qry_num_positives = qry_labs['num_positives'].to('cuda:0')
         
-        #supp_imgs = (supp_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
-        #qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
+        supp_imgs = (supp_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
+        qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
         #with torch.autograd.detect_anomaly():
 
-        try:
-            #with torch.autograd.detect_anomaly():
-            if FLAGS.fpn:
-                with torch.no_grad():
-                    supp_activs = model(supp_activs,mode='only_fpn')
+        #try:
+        #with torch.autograd.detect_anomaly():
+        #if FLAGS.fpn:
+        with torch.no_grad():
+            supp_activs = model(supp_imgs,mode='supp_bb')
 
-            with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter) as (fast_model, inner_opt):
-                for inner_ix in range(FLAGS.steps):
-                    class_out,anchor_inps = fast_model(supp_activs, mode='support')
-                    if inner_ix == 0:
-                        target_mul = anchor_net(anchor_inps)
-                        supp_cls_anchors = [torch.cat([tm_l.unsqueeze(2)*supp_cls_labs[:,c].view(FLAGS.num_sup*FLAGS.n_way,1,1,1,1) for c in range(FLAGS.n_way)],dim=2)
-                            .view(FLAGS.num_sup*FLAGS.n_way,num_anchs*FLAGS.n_way,tm_l.shape[2],tm_l.shape[3]) for tm_l in target_mul]
-                        supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
-                    supp_class_loss = support_loss_fn(class_out, supp_cls_anchors, supp_num_positives)
+        with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
+            feats= model(qry_imgs,mode='bb')
 
-                    inner_opt.step(supp_class_loss, grad_callback=inner_grad_clip)
+        with torch.set_grad_enabled(FLAGS.track_bb_grad and not val_iter):
+            qry_activs, qry_box_out = model(feats,mode='not_cls')
 
-                
-                with torch.set_grad_enabled(not val_iter):
-                    if FLAGS.fpn:
-                        class_out, box_out = fast_model(qry_activs, mode='fpn_head')
-                    else:
-                        class_out, box_out = fast_model(qry_activs, mode='head')
-                    qry_loss, qry_class_loss, qry_box_loss = loss_fn(class_out, box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
+        with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter) as (fast_model, inner_opt):
+            for inner_ix in range(FLAGS.steps):
+                class_out, anchor_inps = fast_model(supp_activs, mode='supp_cls')
+                if inner_ix == 0:
+                    target_mul = anchor_net(anchor_inps)
+                    supp_cls_anchors = [torch.cat([tm_l.unsqueeze(2)*supp_cls_labs[:,c].view(FLAGS.num_sup*FLAGS.n_way,1,1,1,1) for c in range(FLAGS.n_way)],dim=2)
+                        .view(FLAGS.num_sup*FLAGS.n_way,num_anchs*FLAGS.n_way,tm_l.shape[2],tm_l.shape[3]) for tm_l in target_mul]
+                    supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
+                supp_class_loss = support_loss_fn(class_out, supp_cls_anchors, supp_num_positives)
+                inner_opt.step(supp_class_loss, grad_callback=inner_grad_clip)
 
-                if not val_iter:
-                    qry_loss.backward()
+            with torch.set_grad_enabled(not val_iter):
+                qry_class_out = fast_model(qry_activs, mode='qry_cls')
+                qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
-            with torch.no_grad():
-                class_out_post, box_out_post, indices, classes = _post_process(class_out, box_out, num_levels=model_config.num_levels, 
-                    num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
-
-                for b_ix in range(FLAGS.n_way*FLAGS.num_qry):
-                    detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
-                        None, qry_img_size, max_det_per_image=100, soft_nms=False).cpu().numpy()
-                    evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})
-                    bboxes_yxyx = np.concatenate([detections[:,1:2],detections[:,0:1],detections[:,3:4],detections[:,2:3]],axis=1)
-                    evaluator.add_single_detected_image_info(b_ix,{'bbox': bboxes_yxyx, 'scores': detections[:,4], 'cls': detections[:,5]})
-
-                map_metrics = evaluator.evaluate(task_cats)
-                if not val_iter:
-                    iter_metrics['supp_class_loss'] += supp_class_loss
-                    iter_metrics['qry_loss'] += qry_loss
-                    iter_metrics['qry_class_loss'] += qry_class_loss
-                    iter_metrics['qry_bbox_loss'] += qry_box_loss
-                    iter_metrics['mAP'] += map_metrics['Precision/mAP@0.5IOU']
-                    iter_metrics['CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
-                    for metric_key in list(map_metrics.keys())[2:]:
-                        category_metrics[metric_key].append(map_metrics[metric_key])
-                    log_count += 1
-                else:
-                    val_metrics['val_supp_class_loss'] += supp_class_loss
-                    val_metrics['val_qry_loss'] += qry_loss
-                    val_metrics['val_qry_class_loss'] += qry_class_loss
-                    val_metrics['val_qry_bbox_loss'] += qry_box_loss
-                    val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
-                    val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
-                    for metric_key in list(map_metrics.keys())[2:]:
-                        category_metrics['val'+metric_key].append(map_metrics[metric_key])
-
-            
             if not val_iter:
-                t_ix += 1
-                if t_ix < FLAGS.meta_batch_size: continue
-                else: t_ix = 0
+                qry_loss.backward()
 
-                print("Meta Norm:",torch.nn.utils.clip_grad_norm_(model.parameters(),10.))
-                #torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
-                meta_optimizer.step()
-                train_iter += 1
+        with torch.no_grad():
+            class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
+                num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
 
-            if (not val_iter and prev_val_iter):
-                log_metrics = {'iteration':train_iter}
-                for met_key in val_metrics.keys():
-                    log_metrics[met_key] = val_metrics[met_key]/FLAGS.num_val_cats
-                wandb.log(log_metrics)
-                print("Validation Iteration {}:".format(train_iter),log_metrics)
+            for b_ix in range(FLAGS.n_way*FLAGS.num_qry):
+                detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
+                    None, qry_img_size, max_det_per_image=100, soft_nms=False).cpu().numpy()
+                evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})
+                bboxes_yxyx = np.concatenate([detections[:,1:2],detections[:,0:1],detections[:,3:4],detections[:,2:3]],axis=1)
+                evaluator.add_single_detected_image_info(b_ix,{'bbox': bboxes_yxyx, 'scores': detections[:,4], 'cls': detections[:,5]})
 
-                for key in category_metrics:
-                    if len(category_metrics[key]) > 0 and 'val' in key:
-                        print(key,sum(category_metrics[key])/len(category_metrics[key]))
-                        np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
-                        category_metrics[key] = []
+            map_metrics = evaluator.evaluate(task_cats)
+            if not val_iter:
+                iter_metrics['supp_class_loss'] += supp_class_loss
+                iter_metrics['qry_loss'] += qry_loss
+                iter_metrics['qry_class_loss'] += qry_class_loss
+                iter_metrics['qry_bbox_loss'] += qry_box_loss
+                iter_metrics['mAP'] += map_metrics['Precision/mAP@0.5IOU']
+                iter_metrics['CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
+                for metric_key in list(map_metrics.keys())[2:]:
+                    category_metrics[metric_key].append(map_metrics[metric_key])
+                log_count += 1
+            else:
+                val_metrics['val_supp_class_loss'] += supp_class_loss
+                val_metrics['val_qry_loss'] += qry_loss
+                val_metrics['val_qry_class_loss'] += qry_class_loss
+                val_metrics['val_qry_bbox_loss'] += qry_box_loss
+                val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
+                val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
+                for metric_key in list(map_metrics.keys())[2:]:
+                    category_metrics['val'+metric_key].append(map_metrics[metric_key])
 
-                val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
-            elif not val_iter and (log_count >= FLAGS.log_freq):
-                log_metrics = {'iteration':train_iter}
-                for met_key in iter_metrics.keys():
-                    log_metrics[met_key] = iter_metrics[met_key]/log_count
-                wandb.log(log_metrics)
-                print("Train iteration {}:".format(train_iter),log_metrics)
+        if not val_iter:
+            t_ix += 1
+            if t_ix < FLAGS.meta_batch_size: continue
+            else: t_ix = 0
 
-                for key in category_metrics:
-                    if len(category_metrics[key]) > 0 and 'val' not in key:
-                        print(key,sum(category_metrics[key])/len(category_metrics[key]))
-                        np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
-                        category_metrics[key] = []
+            iter_meta_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
+            meta_norm += iter_meta_norm
+            print("Meta Norm:",iter_meta_norm)
+            #torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
+            meta_optimizer.step()
+            train_iter += 1
 
-                iter_metrics = {'supp_loss': 0., 'supp_class_loss': 0., 'supp_bbox_loss': 0.,
-                    'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
-                
-                log_count = 0
+        if (not val_iter and prev_val_iter):
+            log_metrics = {'iteration':train_iter}
+            for met_key in val_metrics.keys():
+                log_metrics[met_key] = val_metrics[met_key]/FLAGS.num_val_cats
+            wandb.log(log_metrics)
+            print("Validation Iteration {}:".format(train_iter),log_metrics)
 
-            prev_val_iter = val_iter
+            for key in category_metrics:
+                if len(category_metrics[key]) > 0 and 'val' in key:
+                    print(key,sum(category_metrics[key])/len(category_metrics[key]))
+                    np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
+                    category_metrics[key] = []
 
-        except Exception as e:
-            print("!!!!!!!!!!!!!",e)
-            with open(FLAGS.exp+'train.txt','a') as fp:
-                fp.write(str(e))
-            continue
+            val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
+        elif not val_iter and (log_count >= FLAGS.log_freq):
+            log_metrics = {'iteration':train_iter}
+            for met_key in iter_metrics.keys():
+                log_metrics[met_key] = iter_metrics[met_key]/log_count
+            log_metrics['meta_norm'] = meta_norm/(log_count/FLAGS.meta_batch_size)
+            wandb.log(log_metrics)
+            print("Train iteration {}:".format(train_iter),log_metrics)
+
+            for key in category_metrics:
+                if len(category_metrics[key]) > 0 and 'val' not in key:
+                    print(key,sum(category_metrics[key])/len(category_metrics[key]))
+                    np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
+                    category_metrics[key] = []
+
+            iter_metrics = {'supp_class_loss': 0.,'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
+            
+            log_count = 0
+
+        prev_val_iter = val_iter
+
+        #except Exception as e:
+        #    print("!!!!!!!!!!!!!",e)
+        #    with open(FLAGS.exp+'train.txt','a') as fp:
+        #        fp.write(str(e))
+        #    continue
 
 
         #for pars in model.named_parameters():
