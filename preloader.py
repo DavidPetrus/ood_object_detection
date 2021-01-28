@@ -27,8 +27,9 @@ INP_SIZE = 256
 
 class PretrainDataset(torch.utils.data.IterableDataset):
 
-    def __init__(self,model_config,n_way,num_sup,num_qry,lvis_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats):
+    def __init__(self,model_config,n_way,num_sup,num_qry,lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats):
         self.lvis_sample = lvis_sample
+        self.lvis_val_sample = lvis_val_sample
         self.lvis_bboxes = lvis_bboxes
         self.lvis_cats = lvis_cats
         self.lvis_train_cats = lvis_train_cats
@@ -91,8 +92,19 @@ class PretrainDataset(torch.utils.data.IterableDataset):
             qry_cls_ls = []
 
             print("Val:",val_iter,task_cats,i,val_count)
-
-            query_imgs = random.sample(list(self.lvis_sample[cat]),self.num_qry)
+            cats = random.sample(list(self.lvis_train_cats),self.num_qry)
+            missed = 0
+            query_images = []
+            for cat in cats:
+                if val_iter:
+                    if cat not in self.lvis_val_sample.keys():
+                        print("Missing Cateogry!!",cat)
+                        missed += 1
+                        continue
+                    query_imgs.extend(random.sample(list(self.lvis_val_sample[cat]),1+missed))
+                    missed = 0
+                else:
+                    query_imgs.extend(random.sample(list(self.lvis_sample[cat]),1))
 
             for img_path in query_imgs:
                 cat_idxs = []
@@ -143,24 +155,20 @@ def load_metadata_dicts():
 
     start = time.time()
 
-    lvis_cat2id = {}
-
-    cats_not_to_incl = ['peach','yogurt','crumb','stirrup','hook']
-
     lvis_all_cats = {}
     with open(base_path+"LVIS/lvis_train_cats.csv",'r') as fp:
         csv_reader = csv.DictReader(fp)
         for row in csv_reader:
-            if row['name'] in cats_not_to_incl: continue
+            #if row['name'] in cats_not_to_incl: continue
             lvis_all_cats[row['name']] = int(row['image_count'])
 
     lvis_all_cats = {k: v for k, v in sorted(lvis_all_cats.items(), key=lambda item: item[1])}
     lvis_train_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats:]
-    lvis_val_cats = list(lvis_all_cats.keys())[-300:-300+FLAGS.num_val_cats]
+    lvis_val_cats = list(lvis_all_cats.keys())[-500:-410]
 
     lvis_cats = {}
     lvis_bboxes = {}
-    with open(base_path+'LVIS/lvis_annots.txt','r') as fp: lines = fp.readlines()
+    with open(base_path+'LVIS/lvis_pre_annots.txt','r') as fp: lines = fp.readlines()
     for line in lines:
         splits = line.split(';')
         if FLAGS.ubuntu:
@@ -170,10 +178,16 @@ def load_metadata_dicts():
             lvis_cats[splits[0]] = ast.literal_eval(splits[1])
             lvis_bboxes[splits[0]] = ast.literal_eval(splits[2])
 
+    with open(base_path+'LVIS/lvis_val_annots.txt','r') as fp: lines = fp.readlines()
+    for line in lines:
+        splits = line.split(';')
+        lvis_cats[splits[0].replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')] = ast.literal_eval(splits[1])
+        lvis_bboxes[splits[0].replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')] = ast.literal_eval(splits[2])
+
     lvis_sample = {}
     added = 0
     not_added = 0
-    with open(base_path+'LVIS/lvis_sample.txt','r') as fp: lines = fp.readlines()
+    with open(base_path+'LVIS/lvis_pre_sample.txt','r') as fp: lines = fp.readlines()
     for line in lines:
         splits = line.split(';')
         if splits[0] not in lvis_train_cats and splits[0] not in lvis_val_cats: continue
@@ -201,16 +215,50 @@ def load_metadata_dicts():
             else:
                 cat_imgs.append(img)
         lvis_sample[splits[0]] = cat_imgs
-        #else:
-        #    lvis_sample[splits[0]] = ast.literal_eval(splits[1])
 
     print(len(lvis_sample.keys()))
     print(added)
     print(not_added)
 
+    lvis_val_sample = {}
+    added = 0
+    not_added = 0
+    with open(base_path+'LVIS/lvis_val_sample.txt','r') as fp: lines = fp.readlines()
+    for line in lines:
+        splits = line.split(';')
+        if splits[0] not in lvis_train_cats and splits[0] not in lvis_val_cats: continue
+        #if FLAGS.fpn and FLAGS.large_qry:
+        cat_imgs = []
+        imgs = ast.literal_eval(splits[1])
+        for img in set(imgs):
+            #if not os.path.exists(img.replace('train2017','train_activ_640').replace('.jpg','_feat5.npy')):
+            #    continue
+            add_to_sample = True
+            if splits[0] in lvis_train_cats:
+                set_cats = set(lvis_cats[img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')]) if FLAGS.ubuntu else set(lvis_cats[img])
+                for img_cat in set_cats:
+                    if img_cat in lvis_val_cats:
+                        add_to_sample = False
+
+            if add_to_sample:
+                added += 1
+            else:
+                not_added += 1
+                continue
+
+            if FLAGS.ubuntu:
+                cat_imgs.append(img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/'))
+            else:
+                cat_imgs.append(img)
+        lvis_val_sample[splits[0]] = cat_imgs
+
+    print(len(lvis_val_sample.keys()))
+    print(added)
+    print(not_added)
+
     print(time.time()-start)
 
-    return lvis_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats
+    return lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats
 
 #colors = [(255,0,0),(0,255,0),(0,0,255),(255,0,255),(0,255,255)]
 #count = 0

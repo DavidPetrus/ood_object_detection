@@ -143,8 +143,8 @@ def main(argv):
 
     anchors = Anchors.from_config(model_config).to('cuda')
 
-    lvis_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
-    dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
+    lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
+    dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
 
     loss_fn = DetectionLoss(model_config)
