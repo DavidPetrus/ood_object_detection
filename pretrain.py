@@ -68,7 +68,7 @@ flags.DEFINE_integer('supp_level_offset',2,'')
 
 def main(argv):
 
-    from dataloader import MetaEpicDataset, load_metadata_dicts
+    from preloader import PretrainDataset, load_metadata_dicts
 
     wandb.init(project="domain_generalization",name=FLAGS.exp)
     wandb.save("infer.py")
@@ -143,8 +143,8 @@ def main(argv):
 
     anchors = Anchors.from_config(model_config).to('cuda')
 
-    lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
-    dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
+    lvis_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
+    dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
 
     loss_fn = DetectionLoss(model_config)
@@ -178,68 +178,36 @@ def main(argv):
     evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'},{'id':2,'name':'b'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
-    iter_metrics = {'supp_class_loss': 0., 'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
-    val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
+    iter_metrics = {'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
+    val_metrics = {'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
     t_ix = 0
     train_iter = 0
     log_count = 0
     prev_val_iter = False
     meta_norm = 0.
     for task in loader:
-        if t_ix == 0: meta_optimizer.zero_grad()
+        meta_optimizer.zero_grad()
 
         evaluator.clear()
         
-        #supp_imgs, supp_labs, qry_imgs, qry_labs = task
-        supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
+        qry_imgs, qry_labs, val_iter = task
 
-        #inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=0.001)
-        inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=FLAGS.inner_lr)
-
-        supp_cls_labs = supp_cls_labs.to('cuda')
         qry_cls_anchors = [cls_anchor.to('cuda:0') for cls_anchor in qry_labs['cls_anchor']]
         qry_bbox_anchors = [bbox_anchor.to('cuda:0') for bbox_anchor in qry_labs['bbox_anchor']]
         qry_num_positives = qry_labs['num_positives'].to('cuda:0')
-        
-        supp_imgs = (supp_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
         qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
-        #with torch.autograd.detect_anomaly():
 
-        #try:
-        #with torch.autograd.detect_anomaly():
-        #if FLAGS.fpn:
-        with torch.no_grad():
-            supp_activs = model(supp_imgs,mode='supp_bb')
 
-        with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
-            feats= model(qry_imgs,mode='bb')
+        with torch.set_grad_enabled(not val_iter):
+            class_out,box_out = model(qry_imgs, mode='full_net')
+            qry_loss, qry_class_loss, qry_box_loss = loss_fn(class_out, box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
-        with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
-            qry_activs, qry_box_out = model(feats,mode='not_cls')
-
-        with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter) as (fast_model, inner_opt):
-            for inner_ix in range(FLAGS.steps):
-                class_out, anchor_inps = fast_model(supp_activs, mode='supp_cls')
-                if inner_ix == 0:
-                    target_mul = anchor_net(anchor_inps)
-                    supp_cls_anchors = [torch.cat([tm_l.unsqueeze(2)*supp_cls_labs[:,c].view(FLAGS.num_sup*FLAGS.n_way,1,1,1,1) for c in range(FLAGS.n_way)],dim=2)
-                        .view(FLAGS.num_sup*FLAGS.n_way,num_anchs*FLAGS.n_way,tm_l.shape[2],tm_l.shape[3]) for tm_l in target_mul]
-                    supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
-                supp_class_loss = support_loss_fn(class_out, supp_cls_anchors, supp_num_positives)
-                inner_opt.step(supp_class_loss, grad_callback=inner_grad_clip)
-
-            with torch.set_grad_enabled(not val_iter):
-                qry_class_out = fast_model(qry_activs, mode='qry_cls')
-                qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
-
-            if not val_iter:
-                qry_loss.backward()
 
         with torch.no_grad():
             class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
                 num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
 
-            for b_ix in range(FLAGS.n_way*FLAGS.num_qry):
+            for b_ix in range(FLAGS.num_qry):
                 detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
                     None, qry_img_size, max_det_per_image=100, soft_nms=False).cpu().numpy()
                 evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})
@@ -248,7 +216,6 @@ def main(argv):
 
             map_metrics = evaluator.evaluate(task_cats)
             if not val_iter:
-                iter_metrics['supp_class_loss'] += supp_class_loss
                 iter_metrics['qry_loss'] += qry_loss
                 iter_metrics['qry_class_loss'] += qry_class_loss
                 iter_metrics['qry_bbox_loss'] += qry_box_loss
@@ -258,7 +225,6 @@ def main(argv):
                     category_metrics[metric_key].append(map_metrics[metric_key])
                 log_count += 1
             else:
-                val_metrics['val_supp_class_loss'] += supp_class_loss
                 val_metrics['val_qry_loss'] += qry_loss
                 val_metrics['val_qry_class_loss'] += qry_class_loss
                 val_metrics['val_qry_bbox_loss'] += qry_box_loss
@@ -268,10 +234,6 @@ def main(argv):
                     category_metrics['val'+metric_key].append(map_metrics[metric_key])
 
         if not val_iter:
-            t_ix += 1
-            if t_ix < FLAGS.meta_batch_size: continue
-            else: t_ix = 0
-
             iter_meta_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
             meta_norm += iter_meta_norm
             print("Meta Norm:",iter_meta_norm)

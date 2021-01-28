@@ -25,11 +25,10 @@ random.seed(time.time())
 INP_SIZE = 256
 
 
-class MetaEpicDataset(torch.utils.data.IterableDataset):
+class PretrainDataset(torch.utils.data.IterableDataset):
 
-    def __init__(self,model_config,n_way,num_sup,num_qry,lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats):
+    def __init__(self,model_config,n_way,num_sup,num_qry,lvis_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats):
         self.lvis_sample = lvis_sample
-        self.web_sample = web_sample
         self.lvis_bboxes = lvis_bboxes
         self.lvis_cats = lvis_cats
         self.lvis_train_cats = lvis_train_cats
@@ -86,75 +85,39 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                 num_val_iters = 0
                 val_count += 1
 
-
-            support_img_batch = []
-            support_lab_batch = []
             query_img_batch = []
             query_lab_batch = []
-            supp_cls_lab = []
             qry_bbox_ls = []
             qry_cls_ls = []
-            if val_iter:
-                task_cats = random.sample(self.lvis_val_cats,self.n_way)
-            else:
-                task_cats = random.sample(self.lvis_train_cats,self.n_way)
 
             print("Val:",val_iter,task_cats,i,val_count)
-            try:
-                for cat_ix,cat in enumerate(task_cats):
-                    support_imgs = random.sample(list(self.web_sample[cat]),self.num_sup)
-                    for img_path in support_imgs:
-                        img_load = Image.open(img_path).convert('RGB')
-                        width,height = img_load.size
-                        img_trans,_ = self.transform(img_load,{'target_size':self.supp_size})
-                        support_img_batch.append(torch.from_numpy(img_trans))
-                        img_cat = task_cats.index(cat)
-                        supp_cls_lab.append(img_cat)
 
-                    query_imgs = random.sample(list(self.lvis_sample[cat]),self.num_qry)
+            query_imgs = random.sample(list(self.lvis_sample[cat]),self.num_qry)
 
-                    for img_path in query_imgs:
-                        cat_idxs = []
-                        for lv_ix,lv_cat in enumerate(self.lvis_cats[img_path]):
-                            if lv_cat in task_cats: cat_idxs.append(lv_ix)
+            for img_path in query_imgs:
+                cat_idxs = []
+                for lv_ix,lv_cat in enumerate(self.lvis_cats[img_path]):
+                    if lv_cat in self.lvis_train_cats: cat_idxs.append(lv_ix)
 
-                        img_bboxes = np.asarray(self.lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
-                        img_bboxes[:,2:] = img_bboxes[:,:2]+img_bboxes[:,2:]
-                        img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
-                        
-                        img_cats = np.asarray(self.lvis_cats[img_path])[cat_idxs]
-                        img_cat_ids = []
-                        for a_ix in range(len(img_cats)): img_cat_ids.append(task_cats.index(img_cats[a_ix]))
-                        img_cat_ids = np.array(img_cat_ids)
+                img_bboxes = np.asarray(self.lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
+                img_bboxes[:,2:] = img_bboxes[:,:2]+img_bboxes[:,2:]
+                img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
+                
+                img_cat_ids = np.array(cat_idxs)
 
-                        target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
-                        img_load = Image.open(img_path).convert('RGB')
-                        img_trans,target = self.transform(img_load,target)
+                target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
+                img_load = Image.open(img_path).convert('RGB')
+                img_trans,target = self.transform(img_load,target)
 
-                        query_img_batch.append(torch.from_numpy(img_trans))
-                        qry_bbox_ls.append(torch.from_numpy(target['bbox']))#.cuda(non_blocking=True))
-                        qry_cls_ls.append(torch.from_numpy(target['cls']+1))#.cuda(non_blocking=True))
-
-            except Exception as e:
-                with open(self.exp+'dataloader.txt','a') as fp:
-                    fp.write(str(e))
-                print("!!!!!!!!!!!!!!!!!!!!!!!",e)
-                continue
-
-            supp_tup = list(zip(support_img_batch,supp_cls_lab))
-            random.shuffle(supp_tup)
-            support_img_batch,supp_cls_lab = zip(*supp_tup)
-            supp_cls_lab = F.one_hot(torch.LongTensor(supp_cls_lab),num_classes=self.n_way)
-
-            qry_tup = list(zip(query_img_batch,qry_bbox_ls,qry_cls_ls))
-            random.shuffle(qry_tup)
-            query_img_batch,qry_bbox_ls,qry_cls_ls = zip(*qry_tup)
+                query_img_batch.append(torch.from_numpy(img_trans))
+                qry_bbox_ls.append(torch.from_numpy(target['bbox']))#.cuda(non_blocking=True))
+                qry_cls_ls.append(torch.from_numpy(target['cls']+1))#.cuda(non_blocking=True))
 
             q_cls_targets, q_box_targets, q_num_positives = self.anchor_labeler.batch_label_anchors(qry_bbox_ls, qry_cls_ls)
             query_lab_batch = {'cls':qry_cls_ls, 'bbox': qry_bbox_ls, 'cls_anchor':q_cls_targets, 'bbox_anchor':q_box_targets, 'num_positives':q_num_positives}
 
             #yield list(map(torch.stack, zip(*support_img_batch))), supp_cls_lab, list(map(torch.stack, zip(*query_img_batch))), query_lab_batch, task_cats, val_iter
-            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, task_cats, val_iter
+            yield torch.stack(query_img_batch), query_lab_batch, val_iter
 
 
 def load_metadata_dicts():
@@ -180,6 +143,8 @@ def load_metadata_dicts():
 
     start = time.time()
 
+    lvis_cat2id = {}
+
     cats_not_to_incl = ['peach','yogurt','crumb','stirrup','hook']
 
     lvis_all_cats = {}
@@ -188,6 +153,7 @@ def load_metadata_dicts():
         for row in csv_reader:
             if row['name'] in cats_not_to_incl: continue
             lvis_all_cats[row['name']] = int(row['image_count'])
+
     lvis_all_cats = {k: v for k, v in sorted(lvis_all_cats.items(), key=lambda item: item[1])}
     lvis_train_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats:]
     lvis_val_cats = list(lvis_all_cats.keys())[-300:-300+FLAGS.num_val_cats]
@@ -237,10 +203,6 @@ def load_metadata_dicts():
         lvis_sample[splits[0]] = cat_imgs
         #else:
         #    lvis_sample[splits[0]] = ast.literal_eval(splits[1])
-    
-    web_sample = {}
-    for cat in lvis_sample.keys():
-        web_sample[cat] = glob.glob(base_path+"web_images/"+cat.replace('_',' ')+"/*")
 
     print(len(lvis_sample.keys()))
     print(added)
@@ -248,7 +210,7 @@ def load_metadata_dicts():
 
     print(time.time()-start)
 
-    return lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats
+    return lvis_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats
 
 #colors = [(255,0,0),(0,255,0),(0,0,255),(255,0,255),(0,255,255)]
 #count = 0
