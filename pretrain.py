@@ -47,6 +47,7 @@ flags.DEFINE_integer('num_qry',10,'')
 flags.DEFINE_integer('meta_batch_size',2,'')
 flags.DEFINE_integer('img_size',256,'')
 
+flags.DEFINE_string('model','d0','')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
 flags.DEFINE_bool('freeze_bb_bn',False,'')
@@ -94,15 +95,18 @@ def main(argv):
             return grads
         return [t if t is None else t.mul(clip_coef) for t in grads]
 
-    if FLAGS.bb == 'b0':
+    if FLAGS.model == 'd0':
+        model_name = 'efficientdet_d0'
         bb_name = 'efficientnet_b0'
-    elif FLAGS.bb == 'b1':
-        bb_name = 'tf_efficientnet_b1_ns'
-    elif FLAGS.bb == 'b3':
-        bb_name = 'tf_efficientnet_b3_ns'
+    elif FLAGS.bb == 'd1':
+        model_name = 'efficientdet_d1'
+        bb_name = 'efficientnet_b1'
+    elif FLAGS.bb == 'd3':
+        model_name = 'efficientdet_d3'
+        bb_name = 'efficientnet_b3'
 
     config=dict(
-        name='efficientdet_d0',
+        name=model_name,
         backbone_name=bb_name,
         image_size=(qry_img_size, qry_img_size),
         fpn_channels=64,
