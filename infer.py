@@ -49,7 +49,7 @@ flags.DEFINE_integer('img_size',256,'')
 
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
-flags.DEFINE_bool('freeze_bb_bn',False,'')
+flags.DEFINE_bool('freeze_bb_bn',True,'')
 flags.DEFINE_bool('train_bb',True,'')
 flags.DEFINE_bool('train_fpn',True,'')
 flags.DEFINE_bool('fpn',True,'')
@@ -159,7 +159,11 @@ def main(argv):
     if not FLAGS.train_mode:
         model.eval()
     elif FLAGS.freeze_bb_bn:
-        model.backbone.eval()
+        def set_bn_eval(module):
+            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+                module.eval()
+            
+        model.apply(set_bn_eval)
 
     anchor_net.to('cuda')
 
