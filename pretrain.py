@@ -60,8 +60,8 @@ flags.DEFINE_float('meta_lr',0.001,'')
 flags.DEFINE_float('inner_lr',0.003,'')
 flags.DEFINE_integer('steps',1,'')
 flags.DEFINE_float('gamma',0.,'')
-flags.DEFINE_float('bbox_coeff',20.,'')
-flags.DEFINE_float('alpha',0.03,'')
+flags.DEFINE_float('bbox_coeff',50.,'')
+flags.DEFINE_float('alpha',0.15,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
 
 
@@ -80,43 +80,54 @@ def main(argv):
 
     qry_img_size = 640 if FLAGS.large_qry else 256
 
-    def inner_grad_clip(grads):
-        max_norm = 10.
-        total_norm = 0.
-        for t in grads:
-            if t is None: continue
-            #print(t.shape)
-            param_norm = t.norm()**2.
-            total_norm += param_norm
-        total_norm = total_norm ** 0.5
-        #print("Norm",total_norm)
-        clip_coef = max_norm / (total_norm + 1e-6)
-        if clip_coef >= 1:
-            return grads
-        return [t if t is None else t.mul(clip_coef) for t in grads]
-
     if FLAGS.model == 'd0':
         model_name = 'efficientdet_d0'
         bb_name = 'efficientnet_b0'
-    elif FLAGS.bb == 'd1':
+        load_ckpt = 'efficientdet_d0-f3276ba8.pth'
+        config=dict(
+            name=model_name,
+            backbone_name=bb_name,
+            image_size=(qry_img_size, qry_img_size),
+            fpn_channels=64,
+            fpn_cell_repeats=3,
+            box_class_repeats=3,
+            pad_type='',
+            redundant_bias=False,
+            backbone_args=dict(drop_path_rate=0.),# checkpoint_path="tf_efficientnet_b1_ns-99dd0c41.pth"),
+            #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/efficientdet_d0-f3276ba8.pth',
+        )
+    elif FLAGS.model == 'd1':
         model_name = 'efficientdet_d1'
         bb_name = 'efficientnet_b1'
-    elif FLAGS.bb == 'd3':
-        model_name = 'efficientdet_d3'
-        bb_name = 'efficientnet_b3'
+        load_ckpt = 'efficientdet_d1-bb7e98fe.pth'
+        config=dict(
+            name='efficientdet_d1',
+            backbone_name='efficientnet_b1',
+            image_size=(640, 640),
+            fpn_channels=88,
+            fpn_cell_repeats=4,
+            box_class_repeats=3,
+            pad_type='',
+            redundant_bias=False,
+            backbone_args=dict(drop_path_rate=0.),
+            #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/efficientdet_d1-bb7e98fe.pth',
+        )
+    elif FLAGS.model == 'd3':
+        model_name = 'tf_efficientdet_d3'
+        bb_name = 'tf_efficientnet_b3'
+        load_ckpt = 'tf_efficientdet_d3_47-0b525f35.pth'
+        config=dict(
+            name='tf_efficientdet_d3',
+            backbone_name='tf_efficientnet_b3',
+            image_size=(896, 896),
+            fpn_channels=160,
+            fpn_cell_repeats=6,
+            box_class_repeats=4,
+            backbone_args=dict(drop_path_rate=0.),
+            #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/tf_efficientdet_d3_47-0b525f35.pth',
+        )
 
-    config=dict(
-        name=model_name,
-        backbone_name=bb_name,
-        image_size=(qry_img_size, qry_img_size),
-        fpn_channels=64,
-        fpn_cell_repeats=3,
-        box_class_repeats=3,
-        pad_type='',
-        redundant_bias=False,
-        backbone_args=dict(drop_path_rate=0.),# checkpoint_path="tf_efficientnet_b1_ns-99dd0c41.pth"),
-        #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/efficientdet_d0-f3276ba8.pth',
-    )
+    
 
     config = OmegaConf.create(config)
 
@@ -126,33 +137,24 @@ def main(argv):
 
     # create the base model
     model = EfficientDet(h)
-    state_dict = torch.load("efficientdet_d0-f3276ba8.pth")
-    if FLAGS.bb != 'b0':
-        load_state_dict = {}
-        for k,v in state_dict.items():
-            if 'backbone' not in k:
-                if FLAGS.bb == 'b3' and ('fpn.cell.0' in k or 'fpn.resample.3.conv.conv.weight' in k): continue
-                load_state_dict[k] = v
-    else:
-        load_state_dict = state_dict
-    model.load_state_dict(load_state_dict, strict=False)
+    state_dict = torch.load(load_ckpt)
+    load_state_dict = state_dict
+    model.load_state_dict(load_state_dict, strict=True)
     #load_checkpoint(model,"efficientdet_d0-f3276ba8.pth")
-    model.reset_head(num_classes=FLAGS.n_way)
+    model.reset_head(num_classes=FLAGS.num_train_cats)
 
     model_config = model.config
     print(model_config['num_classes'])
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
 
-    anchor_net = AnchorNet(h)
-
     anchors = Anchors.from_config(model_config).to('cuda')
 
-    lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
-    dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
+    lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats,eval_cats = load_metadata_dicts()
+    cat_ls = [ec['name'] for ec in eval_cats]
+    dataset = PretrainDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
 
     loss_fn = DetectionLoss(model_config)
-    support_loss_fn = SupportLoss(model_config)
 
 
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
@@ -165,13 +167,11 @@ def main(argv):
     elif FLAGS.freeze_bb_bn:
         model.backbone.eval()
 
-    anchor_net.to('cuda')
-
     #if FLAGS.fpn:
     if FLAGS.optim == 'adam':
-        meta_optimizer = torch.optim.Adam([{'params': model.parameters()},{'params': anchor_net.parameters()}], lr=FLAGS.meta_lr)
+        meta_optimizer = torch.optim.Adam([{'params': model.parameters()}], lr=FLAGS.meta_lr)
     elif FLAGS.optim == 'nesterov':
-        meta_optimizer = torch.optim.SGD([{'params': model.parameters()},{'params': anchor_net.parameters()}], lr=FLAGS.meta_lr, momentum=0.9, nesterov=True)
+        meta_optimizer = torch.optim.SGD([{'params': model.parameters()}], lr=FLAGS.meta_lr, momentum=0.9, nesterov=True)
     #else:
     #    meta_optimizer = torch.optim.Adam([{'params': model.class_net.parameters()},{'params': model.box_net.parameters()}, \
     #        {'params': anchor_net.parameters()}], lr=FLAGS.meta_lr)
@@ -179,7 +179,9 @@ def main(argv):
 
     #wandb.watch(model)
 
-    evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'},{'id':2,'name':'b'}], evaluate_corlocs=True)
+
+
+    evaluator = ObjectDetectionEvaluator(eval_cats, evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
     iter_metrics = {'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
@@ -208,7 +210,7 @@ def main(argv):
 
 
         with torch.no_grad():
-            class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
+            class_out_post, box_out_post, indices, classes = _post_process(class_out, box_out, num_levels=model_config.num_levels, 
                 num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
 
             for b_ix in range(FLAGS.num_qry):
@@ -218,7 +220,9 @@ def main(argv):
                 bboxes_yxyx = np.concatenate([detections[:,1:2],detections[:,0:1],detections[:,3:4],detections[:,2:3]],axis=1)
                 evaluator.add_single_detected_image_info(b_ix,{'bbox': bboxes_yxyx, 'scores': detections[:,4], 'cls': detections[:,5]})
 
-            map_metrics = evaluator.evaluate(task_cats)
+            if not val_iter: log_count += 1
+            '''
+            map_metrics = evaluator.evaluate([])
             if not val_iter:
                 iter_metrics['qry_loss'] += qry_loss
                 iter_metrics['qry_class_loss'] += qry_class_loss
@@ -235,7 +239,7 @@ def main(argv):
                 val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
                 val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
                 for metric_key in list(map_metrics.keys())[2:]:
-                    category_metrics['val'+metric_key].append(map_metrics[metric_key])
+                    category_metrics['val'+metric_key].append(map_metrics[metric_key])'''
 
         if not val_iter:
             iter_meta_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
