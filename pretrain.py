@@ -211,7 +211,7 @@ def main(argv):
             feats= model(qry_imgs, mode='bb')
 
         with torch.set_grad_enabled(not val_iter):
-            class_out,box_out = model(feats, mode='head')
+            class_out,box_out = model(feats, mode='fpn_and_head')
             qry_loss, qry_class_loss, qry_box_loss = loss_fn(class_out, box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
 
