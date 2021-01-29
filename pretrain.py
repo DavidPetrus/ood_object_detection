@@ -162,7 +162,7 @@ def main(argv):
     model.to('cuda')
     if not FLAGS.train_mode:
         model.eval()
-    elif FLAGS.freeze_bb_bn:
+    elif FLAGS.freeze_bb_bn or not FLAGS.train_bb:
         model.backbone.eval()
 
     # Freeze only bn
@@ -175,6 +175,14 @@ def main(argv):
         if hasattr(module, 'bias'):
             module.bias.requires_grad_(False)
         module.eval()
+    '''
+
+    '''
+    def set_bn_eval(module):
+    if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+        module.eval()
+        
+    model.apply(set_bn_eval)
     '''
 
     #if FLAGS.fpn:
