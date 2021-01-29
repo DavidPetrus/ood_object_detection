@@ -15,8 +15,6 @@ from effdet.anchors import Anchors, AnchorLabeler, generate_detections
 from effdet.loss import DetectionLoss, SupportLoss
 from effdet.evaluation.detection_evaluator import ObjectDetectionEvaluator
 
-
-
 from collections import OrderedDict, defaultdict
 
 from absl import flags
@@ -119,7 +117,7 @@ def main(argv):
         config=dict(
             name='tf_efficientdet_d3',
             backbone_name='tf_efficientnet_b3',
-            image_size=(896, 896),
+            image_size=(640, 640),
             fpn_channels=160,
             fpn_cell_repeats=6,
             box_class_repeats=4,
@@ -203,9 +201,11 @@ def main(argv):
         qry_num_positives = qry_labs['num_positives'].to('cuda:0')
         qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
 
+        with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
+            feats= model(qry_imgs, mode='bb')
 
         with torch.set_grad_enabled(not val_iter):
-            class_out,box_out = model(qry_imgs, mode='full_net')
+            class_out,box_out = model(feats, mode='head')
             qry_loss, qry_class_loss, qry_box_loss = loss_fn(class_out, box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
 

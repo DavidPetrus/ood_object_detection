@@ -683,6 +683,10 @@ class EfficientDet(nn.Module):
             feats = self.backbone(x)
             activs = self.fpn(feats)
             return feats,activs
+        elif mode=='head':
+            activs = self.fpn(x)
+            x_class = self.class_net(activs)
+            x_box = self.box_net(activs)
         
 
 
