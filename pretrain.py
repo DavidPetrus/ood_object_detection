@@ -160,30 +160,17 @@ def main(argv):
     imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
     model.to('cuda')
+
     if not FLAGS.train_mode:
         model.eval()
-    elif FLAGS.freeze_bb_bn or not FLAGS.train_bb:
+    elif not FLAGS.train_bb:
         model.backbone.eval()
-
-    # Freeze only bn
-    '''
-    for module in model.modules():
-    # print(module)
-    if isinstance(module, nn.BatchNorm2d):
-        if hasattr(module, 'weight'):
-            module.weight.requires_grad_(False)
-        if hasattr(module, 'bias'):
-            module.bias.requires_grad_(False)
-        module.eval()
-    '''
-
-    '''
-    def set_bn_eval(module):
-    if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-        module.eval()
-        
-    model.apply(set_bn_eval)
-    '''
+    elif FLAGS.freeze_bb_bn:
+        def set_bn_eval(module):
+            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+                module.eval()
+            
+        model.apply(set_bn_eval)
 
     #if FLAGS.fpn:
     if FLAGS.optim == 'adam':
@@ -196,7 +183,6 @@ def main(argv):
     #meta_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     #wandb.watch(model)
-
 
 
     evaluator = ObjectDetectionEvaluator(eval_cats, evaluate_corlocs=True)
