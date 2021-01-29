@@ -165,6 +165,18 @@ def main(argv):
     elif FLAGS.freeze_bb_bn:
         model.backbone.eval()
 
+    # Freeze only bn
+    '''
+    for module in model.modules():
+    # print(module)
+    if isinstance(module, nn.BatchNorm2d):
+        if hasattr(module, 'weight'):
+            module.weight.requires_grad_(False)
+        if hasattr(module, 'bias'):
+            module.bias.requires_grad_(False)
+        module.eval()
+    '''
+
     #if FLAGS.fpn:
     if FLAGS.optim == 'adam':
         meta_optimizer = torch.optim.Adam([{'params': model.parameters()}], lr=FLAGS.meta_lr)
