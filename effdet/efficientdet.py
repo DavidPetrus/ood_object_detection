@@ -687,6 +687,7 @@ class EfficientDet(nn.Module):
             activs = self.fpn(x)
             x_class = self.class_net(activs)
             x_box = self.box_net(activs)
+            return x_class,x_box
         
 
 
