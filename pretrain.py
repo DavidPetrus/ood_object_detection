@@ -163,8 +163,6 @@ def main(argv):
 
     if not FLAGS.train_mode:
         model.eval()
-    elif not FLAGS.train_bb:
-        model.backbone.eval()
     elif FLAGS.freeze_bb_bn:
         def set_bn_eval(module):
             if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
