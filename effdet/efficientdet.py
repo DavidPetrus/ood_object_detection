@@ -399,9 +399,10 @@ class HeadNet(nn.Module):
         # This can be organized with repeats first or feature levels first in module lists, the original models
         # and weights were setup with repeats first, levels first is required for efficient torchscript usage.
         self.bn_rep = nn.ModuleList()
-        for _ in range(self.num_levels):
+        for _ in range(config.box_class_repeats):
             self.bn_rep.append(nn.ModuleList([
-                norm_layer(num_channels) for _ in range(config.box_class_repeats)]))
+                nn.Sequential(OrderedDict([('bn', norm_layer(num_channels))]))
+                for _ in range(self.num_levels)]))
 
         self.act = act_layer(inplace=True)
 
