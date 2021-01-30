@@ -367,7 +367,7 @@ class BiFpn(nn.Module):
 
 class HeadNet(nn.Module):
 
-    def __init__(self, config, num_outputs):
+    def __init__(self, config, num_outputs, num_channels_flag=None):
         super(HeadNet, self).__init__()
         self.num_levels = config.num_levels
         self.bn_level_first = getattr(config, 'head_bn_level_first', False)
@@ -377,33 +377,38 @@ class HeadNet(nn.Module):
         act_type = config.head_act_type if getattr(config, 'head_act_type', None) else config.act_type
         act_layer = get_act_layer(act_type) or _ACT_LAYER
 
+        num_channels = num_channels_flag or config.fpn_channels
+
         # Build convolution repeats
         conv_fn = SeparableConv2d if config.separable_conv else ConvBnAct2d
-        conv_kwargs = dict(
-            in_channels=config.fpn_channels, out_channels=config.fpn_channels, kernel_size=3,
-            padding=config.pad_type, bias=config.redundant_bias, act_layer=None, norm_layer=None)
-        self.conv_rep = nn.ModuleList([conv_fn(**conv_kwargs) for _ in range(config.box_class_repeats)])
+        if num_channels_flag is None:
+            in_conv = dict(
+                in_channels=config.fpn_channels, out_channels=num_channels, kernel_size=3,
+                padding=config.pad_type, bias=config.redundant_bias, act_layer=None, norm_layer=None)
+            conv_kwargs = dict(
+                in_channels=num_channels, out_channels=num_channels, kernel_size=3,
+                padding=config.pad_type, bias=config.redundant_bias, act_layer=None, norm_layer=None)
+            self.conv_rep = nn.ModuleList([conv_fn(**in_conv)]+[conv_fn(**conv_kwargs) for _ in range(config.box_class_repeats-1)])
+        else:
+            conv_kwargs = dict(
+                in_channels=num_channels, out_channels=num_channels, kernel_size=3,
+                padding=config.pad_type, bias=config.redundant_bias, act_layer=None, norm_layer=None)
+            self.conv_rep = nn.ModuleList([conv_fn(**conv_kwargs) for _ in range(config.box_class_repeats)])
 
         # Build batchnorm repeats. There is a unique batchnorm per feature level for each repeat.
         # This can be organized with repeats first or feature levels first in module lists, the original models
         # and weights were setup with repeats first, levels first is required for efficient torchscript usage.
         self.bn_rep = nn.ModuleList()
-        if self.bn_level_first:
-            for _ in range(self.num_levels):
-                self.bn_rep.append(nn.ModuleList([
-                    norm_layer(config.fpn_channels) for _ in range(config.box_class_repeats)]))
-        else:
-            for _ in range(config.box_class_repeats):
-                self.bn_rep.append(nn.ModuleList([
-                    nn.Sequential(OrderedDict([('bn', norm_layer(config.fpn_channels))]))
-                    for _ in range(self.num_levels)]))
+        for _ in range(self.num_levels):
+            self.bn_rep.append(nn.ModuleList([
+                norm_layer(num_channels) for _ in range(config.box_class_repeats)]))
 
         self.act = act_layer(inplace=True)
 
         # Prediction (output) layer. Has bias with special init reqs, see init fn.
         num_anchors = len(config.aspect_ratios) * config.num_scales
         predict_kwargs = dict(
-            in_channels=config.fpn_channels, out_channels=num_outputs * num_anchors, kernel_size=3,
+            in_channels=num_channels, out_channels=num_outputs * num_anchors, kernel_size=3,
             padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
         self.predict = conv_fn(**predict_kwargs)
 
@@ -441,7 +446,7 @@ class HeadNet(nn.Module):
             if ret_activs: activs.append(x_level)
             outputs.append(self.predict(x_level))
         if ret_activs:
-            return activs,outputs
+            return activs, outputs
         else:
             return outputs
 
@@ -504,7 +509,7 @@ def _init_weight(m, n='', ):
             _variance_scaling(m.conv_dw.weight, groups=m.conv_dw.groups)
             _variance_scaling(m.conv_pw.weight)
             if m.conv_pw.bias is not None:
-                if 'class_net.predict' in n or 'anchor_net' in n:
+                if 'class_net.predict' in n or 'anchor_out' in n:
                     m.conv_pw.bias.data.fill_(-math.log((1 - 0.01) / 0.01))
                 else:
                     m.conv_pw.bias.data.zero_()
@@ -562,15 +567,28 @@ def get_feature_info(backbone):
 
 class AnchorNet(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, at_start=True):
         super(AnchorNet, self).__init__()
         self.config = config
         self.num_levels = config.num_levels
         num_anchors = len(config.aspect_ratios) * config.num_scales
-        anchor_kwargs = dict(
-            in_channels=config.fpn_channels, out_channels=num_anchors, kernel_size=3,
+        if at_start:
+            anchor_kwargs = dict(
+                in_channels=config.fpn_channels, out_channels=48, kernel_size=3,
+                padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
+        else:
+            anchor_kwargs = dict(
+                in_channels=FLAGS.num_channels, out_channels=48, kernel_size=3,
+                padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
+
+        self.anchor_layer = SeparableConv2d(**anchor_kwargs)
+        self.norm_layer = nn.BatchNorm2d(48,**config.norm_kwargs)
+        self.act = Swish(inplace=True)
+
+        anchor_out_kwargs = dict(
+            in_channels=48, out_channels=9, kernel_size=3,
             padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
-        self.anchor_net = SeparableConv2d(**anchor_kwargs)
+        self.anchor_out = SeparableConv2d(**anchor_out_kwargs)
 
         for n, m in self.named_modules():
             _init_weight(m, n)
@@ -579,7 +597,8 @@ class AnchorNet(nn.Module):
         outputs = []
         for level in range(len(x)):
             x_level = x[level]
-            outputs.append(self.anchor_net(x_level).sigmoid())
+            anch_l1 = self.act(self.norm_layer(self.anchor_layer(x_level)))
+            outputs.append(self.anchor_net(anch_l1).sigmoid())
         return outputs
 
 
@@ -610,7 +629,7 @@ class EfficientDet(nn.Module):
                     _init_weight(m, n)
 
     @torch.jit.ignore()
-    def reset_head(self, num_classes=None, aspect_ratios=None, num_scales=None, alternate_init=False):
+    def reset_head(self, num_classes=None, num_channels=None, aspect_ratios=None, num_scales=None, alternate_init=False):
         reset_class_head = False
         reset_box_head = False
         set_config_writeable(self.config)
@@ -626,7 +645,7 @@ class EfficientDet(nn.Module):
         set_config_readonly(self.config)
 
         if reset_class_head:
-            self.class_net = HeadNet(self.config, num_outputs=self.config.num_classes)
+            self.class_net = HeadNet(self.config, num_outputs=self.config.num_classes, num_channels_flag=num_channels)
             for n, m in self.class_net.named_modules(prefix='class_net'):
                 if alternate_init:
                     _init_weight_alt(m, n)
@@ -650,8 +669,12 @@ class EfficientDet(nn.Module):
 
     def forward(self, x, mode='full_net'):
         if mode=='supp_cls':
-            anchor_inps, x_class = self.class_net(x,ret_activs=True,level_offset=FLAGS.supp_level_offset)
-            return x_class, anchor_inps
+            if FLAGS.at_start:
+                x_class = self.class_net(x,level_offset=FLAGS.supp_level_offset)
+                return x_class, x
+            else:
+                anchor_inps, x_class = self.class_net(x,ret_activs=True,level_offset=FLAGS.supp_level_offset)
+                return x_class, anchor_inps
         elif mode=='supp_bb':
             x = self.backbone(x)
             activs = self.fpn(x)

@@ -12,7 +12,7 @@ import os
 import glob
 import gc
 
-from effdet.data.transforms import transforms_coco_eval, clip_boxes_
+from effdet.data.transforms import transforms_coco_eval, transforms_coco_train, clip_boxes_
 from effdet.loss import DetectionLoss
 from effdet.anchors import Anchors, AnchorLabeler
 
@@ -65,8 +65,13 @@ class PretrainDataset(torch.utils.data.IterableDataset):
         self.n_way = FLAGS.n_way
         self.num_workers = FLAGS.num_workers
 
-        self.anchors = Anchors.from_config(model_config)#.to('cuda:0', non_blocking=True)
+        self.anchors = Anchors.from_config(model_config)
         self.anchor_labeler = AnchorLabeler(self.anchors, FLAGS.num_train_cats, match_threshold=0.5)
+
+        if FLAGS.random_trans:
+            self.train_transform = transforms_coco_train(self.qry_img_size,use_prefetcher=True)
+        else:
+            self.train_transform = transforms_coco_eval(self.qry_img_size,interpolation='bilinear',use_prefetcher=True)
 
         self.transform = transforms_coco_eval(self.qry_img_size,interpolation='bilinear',use_prefetcher=True)
 
@@ -92,9 +97,10 @@ class PretrainDataset(torch.utils.data.IterableDataset):
             qry_cls_ls = []
 
             print("Val:",val_iter,i,val_count)
-            cats = random.sample(list(self.lvis_train_cats),self.num_qry)
+            cats = random.sample(self.lvis_train_cats,self.num_qry)
             missed = 0
             query_imgs = []
+            batch_cats = []
             for cat in cats:
                 if val_iter:
                     if cat not in self.lvis_val_sample.keys():
@@ -108,28 +114,40 @@ class PretrainDataset(torch.utils.data.IterableDataset):
 
             for img_path in query_imgs:
                 cat_idxs = []
+                cls_targets = []
                 for lv_ix,lv_cat in enumerate(self.lvis_cats[img_path]):
-                    if lv_cat in self.lvis_train_cats: cat_idxs.append(lv_ix)
+                    if lv_cat in self.lvis_train_cats: 
+                        cat_idxs.append(lv_ix)
+                        cls_targets.append(self.lvis_train_cats.index(lv_cat))
+
+                batch_cats.extend(cls_targets)
 
                 img_bboxes = np.asarray(self.lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
                 img_bboxes[:,2:] = img_bboxes[:,:2]+img_bboxes[:,2:]
                 img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
                 
-                img_cat_ids = np.array(cat_idxs)
+                img_cat_ids = np.array(cls_targets)
 
                 target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
-                img_load = Image.open(img_path).convert('RGB')
-                img_trans,target = self.transform(img_load,target)
+                try:
+                    img_load = Image.open(img_path).convert('RGB')
+                except:
+                    img_load = Image.open(img_path.replace('val2017','train2017')).convert('RGB')
+
+                if not val_iter:
+                    img_trans,target = self.train_transform(img_load,target)
+                else:
+                    img_trans,target = self.transform(img_load,target)
 
                 query_img_batch.append(torch.from_numpy(img_trans))
-                qry_bbox_ls.append(torch.from_numpy(target['bbox']))#.cuda(non_blocking=True))
-                qry_cls_ls.append(torch.from_numpy(target['cls']+1))#.cuda(non_blocking=True))
+                qry_bbox_ls.append(torch.from_numpy(target['bbox']))
+                qry_cls_ls.append(torch.from_numpy(target['cls']+1))
 
             q_cls_targets, q_box_targets, q_num_positives = self.anchor_labeler.batch_label_anchors(qry_bbox_ls, qry_cls_ls)
             query_lab_batch = {'cls':qry_cls_ls, 'bbox': qry_bbox_ls, 'cls_anchor':q_cls_targets, 'bbox_anchor':q_box_targets, 'num_positives':q_num_positives}
 
             #yield list(map(torch.stack, zip(*support_img_batch))), supp_cls_lab, list(map(torch.stack, zip(*query_img_batch))), query_lab_batch, task_cats, val_iter
-            yield torch.stack(query_img_batch), query_lab_batch, val_iter
+            yield torch.stack(query_img_batch), query_lab_batch, val_iter, set(batch_cats)
 
 
 def load_metadata_dicts():
@@ -160,18 +178,20 @@ def load_metadata_dicts():
         csv_reader = csv.DictReader(fp)
         for row in csv_reader:
             #if row['name'] in cats_not_to_incl: continue
-            lvis_all_cats[row['name']] = int(row['image_count'])
+            lvis_all_cats[int(row['id'])] = int(row['image_count'])
 
     lvis_all_cats = {k: v for k, v in sorted(lvis_all_cats.items(), key=lambda item: item[1])}
     lvis_train_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats:]
     lvis_val_cats = list(lvis_all_cats.keys())[-500:-400]
 
     eval_cats = []
+    cat2id = {}
     with open(base_path+"LVIS/lvis_train_cats.csv",'r') as fp:
         csv_reader = csv.DictReader(fp)
         for row in csv_reader:
-            if row['name'] in lvis_train_cats:
-                eval_cats.append({'id':int(row['id']),'name':row['name']})
+            cat2id[row['name']] = int(row['id'])
+            if int(row['id']) in lvis_train_cats:
+                eval_cats.append({'id':lvis_train_cats.index(int(row['id']))+1,'name':row['name']})
 
     lvis_cats = {}
     lvis_bboxes = {}
@@ -193,7 +213,7 @@ def load_metadata_dicts():
     with open(base_path+'LVIS/lvis_pre_sample.txt','r') as fp: lines = fp.readlines()
     for line in lines:
         splits = line.split(';')
-        if splits[0] not in lvis_train_cats: continue
+        if cat2id[splits[0]] not in lvis_train_cats: continue
         #if FLAGS.fpn and FLAGS.large_qry:
         cat_imgs = []
         imgs = ast.literal_eval(splits[1])
@@ -214,7 +234,7 @@ def load_metadata_dicts():
 
             cat_imgs.append(img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')[:-14]+'00'+img[-14:])
 
-        lvis_sample[splits[0]] = cat_imgs
+        lvis_sample[cat2id[splits[0]]] = cat_imgs
 
     print(len(lvis_sample.keys()))
     print(added)
@@ -226,7 +246,7 @@ def load_metadata_dicts():
     with open(base_path+'LVIS/lvis_val_sample.txt','r') as fp: lines = fp.readlines()
     for line in lines:
         splits = line.split(';')
-        if splits[0] not in lvis_train_cats: continue
+        if cat2id[splits[0]] not in lvis_train_cats: continue
         #if FLAGS.fpn and FLAGS.large_qry:
         cat_imgs = []
         imgs = ast.literal_eval(splits[1])
@@ -247,7 +267,7 @@ def load_metadata_dicts():
 
             cat_imgs.append(img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')[:-14]+'00'+img[-14:])
 
-        lvis_val_sample[splits[0]] = cat_imgs
+        lvis_val_sample[cat2id[splits[0]]] = cat_imgs
 
     print(len(lvis_val_sample.keys()))
     print(added)

@@ -62,7 +62,8 @@ flags.DEFINE_float('gamma',0.,'')
 flags.DEFINE_float('bbox_coeff',20.,'')
 flags.DEFINE_float('alpha',0.03,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
-
+flags.DEFINE_integer('num_channels',48,'')
+flags.DEFINE_bool('anchor_at_start',True,'')
 
 
 
@@ -88,9 +89,9 @@ def main(argv):
             param_norm = t.norm()**2.
             total_norm += param_norm
         total_norm = total_norm ** 0.5
-        #print("Norm",total_norm)
+        print("Supp Norm",total_norm)
         clip_coef = max_norm / (total_norm + 1e-6)
-        if clip_coef >= 1:
+        if clip_coef >= 0:
             return grads
         return [t if t is None else t.mul(clip_coef) for t in grads]
 
@@ -133,13 +134,13 @@ def main(argv):
         load_state_dict = state_dict
     model.load_state_dict(load_state_dict, strict=False)
     #load_checkpoint(model,"efficientdet_d0-f3276ba8.pth")
-    model.reset_head(num_classes=FLAGS.n_way)
+    model.reset_head(num_classes=FLAGS.n_way, num_channels=FLAGS.num_channels)
 
     model_config = model.config
     print(model_config['num_classes'])
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
 
-    anchor_net = AnchorNet(h)
+    anchor_net = AnchorNet(h, at_start=FLAGS.anchor_at_start)
 
     anchors = Anchors.from_config(model_config).to('cuda')
 
@@ -224,7 +225,7 @@ def main(argv):
         with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter) as (fast_model, inner_opt):
             for inner_ix in range(FLAGS.steps):
                 class_out, anchor_inps = fast_model(supp_activs, mode='supp_cls')
-                if inner_ix == 0:
+                if inner_ix == 0 or not FLAGS.at_start:
                     target_mul = anchor_net(anchor_inps)
                     supp_cls_anchors = [torch.cat([tm_l.unsqueeze(2)*supp_cls_labs[:,c].view(FLAGS.num_sup*FLAGS.n_way,1,1,1,1) for c in range(FLAGS.n_way)],dim=2)
                         .view(FLAGS.num_sup*FLAGS.n_way,num_anchs*FLAGS.n_way,tm_l.shape[2],tm_l.shape[3]) for tm_l in target_mul]

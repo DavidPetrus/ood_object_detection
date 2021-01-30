@@ -45,9 +45,11 @@ flags.DEFINE_integer('num_qry',10,'')
 flags.DEFINE_integer('meta_batch_size',2,'')
 flags.DEFINE_integer('img_size',256,'')
 
+flags.DEFINE_bool('random_trans',False,'')
 flags.DEFINE_string('model','d0','')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
+flags.DEFINE_float('dropout',0.2,'')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
 flags.DEFINE_bool('train_bb',True,'')
 flags.DEFINE_bool('train_fpn',True,'')
@@ -91,7 +93,7 @@ def main(argv):
             box_class_repeats=3,
             pad_type='',
             redundant_bias=False,
-            backbone_args=dict(drop_path_rate=0.),# checkpoint_path="tf_efficientnet_b1_ns-99dd0c41.pth"),
+            backbone_args=dict(drop_path_rate=FLAGS.dropout),# checkpoint_path="tf_efficientnet_b1_ns-99dd0c41.pth"),
             #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/efficientdet_d0-f3276ba8.pth',
         )
     elif FLAGS.model == 'd1':
@@ -107,7 +109,7 @@ def main(argv):
             box_class_repeats=3,
             pad_type='',
             redundant_bias=False,
-            backbone_args=dict(drop_path_rate=0.),
+            backbone_args=dict(drop_path_rate=FLAGS.dropout),
             #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/efficientdet_d1-bb7e98fe.pth',
         )
     elif FLAGS.model == 'd3':
@@ -121,7 +123,7 @@ def main(argv):
             fpn_channels=160,
             fpn_cell_repeats=6,
             box_class_repeats=4,
-            backbone_args=dict(drop_path_rate=0.),
+            backbone_args=dict(drop_path_rate=FLAGS.dropout),
             #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/tf_efficientdet_d3_47-0b525f35.pth',
         )
 
@@ -145,21 +147,21 @@ def main(argv):
     print(model_config['num_classes'])
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
 
-    anchors = Anchors.from_config(model_config).to('cuda')
-
     lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats,eval_cats = load_metadata_dicts()
     cat_ls = [ec['name'] for ec in eval_cats]
     dataset = PretrainDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,lvis_val_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=False)
 
     loss_fn = DetectionLoss(model_config)
 
+    min_val_loss = 10.
 
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
     imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
     model.to('cuda')
+    anchors = Anchors.from_config(model_config).to('cuda')
 
     if not FLAGS.train_mode:
         model.eval()
@@ -168,11 +170,16 @@ def main(argv):
             if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
                 module.eval()
             
-        model.apply(set_bn_eval)
+        model.backbone.apply(set_bn_eval)
 
     #if FLAGS.fpn:
     if FLAGS.optim == 'adam':
-        meta_optimizer = torch.optim.Adam([{'params': model.parameters()}], lr=FLAGS.meta_lr)
+        if FLAGS.train_bb:
+            meta_optimizer = torch.optim.Adam([{'params': model.fpn.parameters(), 'lr':0.}, \
+                {'params': model.class_net.parameters()},{'params': model.box_net.parameters()}], lr=FLAGS.meta_lr)
+        else:
+            meta_optimizer = torch.optim.Adam([{'params': model.backbone.parameters(), 'lr':0.},{'params': model.fpn.parameters(), 'lr':0.}, \
+                {'params': model.class_net.parameters()},{'params': model.box_net.parameters()}], lr=FLAGS.meta_lr)
     elif FLAGS.optim == 'nesterov':
         meta_optimizer = torch.optim.SGD([{'params': model.parameters()}], lr=FLAGS.meta_lr, momentum=0.9, nesterov=True)
     #else:
@@ -191,6 +198,7 @@ def main(argv):
     t_ix = 0
     train_iter = 0
     log_count = 0
+    val_count = 0
     prev_val_iter = False
     meta_norm = 0.
     for task in loader:
@@ -198,7 +206,13 @@ def main(argv):
 
         evaluator.clear()
         
-        qry_imgs, qry_labs, val_iter = task
+        qry_imgs, qry_labs, val_iter, batch_cats = task
+
+        if not prev_val_iter and val_iter:
+            model.eval()
+        elif prev_val_iter and not val_iter:
+            model.train()
+            model.backbone.apply(set_bn_eval)
 
         qry_cls_anchors = [cls_anchor.to('cuda:0') for cls_anchor in qry_labs['cls_anchor']]
         qry_bbox_anchors = [bbox_anchor.to('cuda:0') for bbox_anchor in qry_labs['bbox_anchor']]
@@ -206,16 +220,20 @@ def main(argv):
         qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
 
         with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
-            feats= model(qry_imgs, mode='bb')
+            feats = model(qry_imgs, mode='bb')
 
         with torch.set_grad_enabled(not val_iter):
             class_out,box_out = model(feats, mode='fpn_and_head')
             qry_loss, qry_class_loss, qry_box_loss = loss_fn(class_out, box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
+            if not val_iter:
+                qry_loss.backward()
 
         with torch.no_grad():
-            class_out_post, box_out_post, indices, classes = _post_process(class_out, box_out, num_levels=model_config.num_levels, 
-                num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
+            #class_out_post, box_out_post, indices, classes = _post_process([cls_out.cpu() for cls_out in class_out], [bx_out.cpu() for bx_out in box_out], 
+            #    num_levels=model_config.num_levels, num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
+            class_out_post, box_out_post, indices, classes = _post_process(class_out, box_out, 
+                num_levels=model_config.num_levels, num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
 
             for b_ix in range(FLAGS.num_qry):
                 detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
@@ -223,10 +241,8 @@ def main(argv):
                 evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})
                 bboxes_yxyx = np.concatenate([detections[:,1:2],detections[:,0:1],detections[:,3:4],detections[:,2:3]],axis=1)
                 evaluator.add_single_detected_image_info(b_ix,{'bbox': bboxes_yxyx, 'scores': detections[:,4], 'cls': detections[:,5]})
-
-            if not val_iter: log_count += 1
-            '''
-            map_metrics = evaluator.evaluate([])
+            
+            map_metrics = evaluator.evaluate(cat_ls,batch_cats)
             if not val_iter:
                 iter_metrics['qry_loss'] += qry_loss
                 iter_metrics['qry_class_loss'] += qry_class_loss
@@ -243,20 +259,25 @@ def main(argv):
                 val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
                 val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
                 for metric_key in list(map_metrics.keys())[2:]:
-                    category_metrics['val'+metric_key].append(map_metrics[metric_key])'''
+                    category_metrics['val'+metric_key].append(map_metrics[metric_key])
+                val_count += 1
 
         if not val_iter:
             iter_meta_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
             meta_norm += iter_meta_norm
-            print("Meta Norm:",iter_meta_norm)
+            print(train_iter,datetime.datetime.now(),"Meta Norm:",iter_meta_norm)
             #torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
             meta_optimizer.step()
             train_iter += 1
 
+            if train_iter > 200:
+                meta_optimizer.param_groups[0]['lr'] = FLAGS.meta_lr
+                meta_optimizer.param_groups[1]['lr'] = FLAGS.meta_lr
+
         if (not val_iter and prev_val_iter):
             log_metrics = {'iteration':train_iter}
             for met_key in val_metrics.keys():
-                log_metrics[met_key] = val_metrics[met_key]/FLAGS.num_val_cats
+                log_metrics[met_key] = val_metrics[met_key]/val_count
             wandb.log(log_metrics)
             print("Validation Iteration {}:".format(train_iter),log_metrics)
 
@@ -266,12 +287,17 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
+            if log_metrics['val_qry_loss'] < min_val_loss:
+                torch.save(model.state_dict,'checkpoints/{}_{}_{}.pth'.format(FLAGS.exp,train_iter,log_metrics['val_qry_loss']))
+                min_val_loss = log_metrics['val_qry_loss']
+
             val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
+            val_count = 0
         elif not val_iter and (log_count >= FLAGS.log_freq):
             log_metrics = {'iteration':train_iter}
             for met_key in iter_metrics.keys():
                 log_metrics[met_key] = iter_metrics[met_key]/log_count
-            log_metrics['meta_norm'] = meta_norm/(log_count/FLAGS.meta_batch_size)
+            log_metrics['meta_norm'] = meta_norm/log_count
             meta_norm = 0.
             wandb.log(log_metrics)
             print("Train iteration {}:".format(train_iter),log_metrics)
@@ -283,7 +309,6 @@ def main(argv):
                     category_metrics[key] = []
 
             iter_metrics = {'supp_class_loss': 0.,'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
-            
             log_count = 0
 
         prev_val_iter = val_iter
