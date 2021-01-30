@@ -44,7 +44,7 @@ def default_detection_model_configs():
     h.pad_type = 'same'  # original TF models require an equivalent of Tensorflow 'SAME' padding
     h.act_type = 'swish'
     h.norm_layer = None  # defaults to batch norm when None
-    h.norm_kwargs = dict(eps=.001, momentum=.01)
+    h.norm_kwargs = dict(eps=0.001, momentum=.01)
     h.box_class_repeats = 3
     h.fpn_cell_repeats = 3
     h.fpn_channels = 88
@@ -67,7 +67,7 @@ def default_detection_model_configs():
     h.alpha = FLAGS.alpha
     #h.alpha = 0.25
     h.gamma = FLAGS.gamma
-    h.gamma = 1.5
+    #h.gamma = 1.5
     h.label_smoothing = 0.  # only supported if legacy_focal == False, haven't produced great results
     h.legacy_focal = False  # use legacy focal loss (less stable, lower memory use in some cases)
     h.jit_loss = False  # torchscript jit for loss fn speed improvement, can impact stability and/or increase mem usage
