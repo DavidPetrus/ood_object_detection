@@ -34,12 +34,8 @@ flags.DEFINE_bool('ubuntu',True,'')
 
 flags.DEFINE_integer('log_freq',50,'')
 flags.DEFINE_integer('num_workers',16,'')
-flags.DEFINE_integer('max_lvis_load',4000,'')
-flags.DEFINE_integer('num_preloads',5,'')
-flags.DEFINE_integer('num_preload_cats',100,'')
 flags.DEFINE_integer('num_train_cats',250,'')
 flags.DEFINE_integer('num_val_cats',50,'')
-flags.DEFINE_integer('num_val_imgs',20,'')
 flags.DEFINE_integer('val_freq',100,'')
 flags.DEFINE_integer('n_way',2,'')
 flags.DEFINE_integer('num_sup',25,'')
@@ -47,10 +43,12 @@ flags.DEFINE_integer('num_qry',10,'')
 flags.DEFINE_integer('meta_batch_size',2,'')
 flags.DEFINE_integer('img_size',256,'')
 
+flags.DEFINE_string('model','d3','')
+flags.DEFINE_float('dropout',0.,'')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
-flags.DEFINE_bool('train_bb',True,'')
+flags.DEFINE_bool('train_bb',False,'')
 flags.DEFINE_bool('train_fpn',True,'')
 flags.DEFINE_bool('fpn',True,'')
 flags.DEFINE_bool('large_qry',True,'')
@@ -102,18 +100,53 @@ def main(argv):
     elif FLAGS.bb == 'b3':
         bb_name = 'tf_efficientnet_b3_ns'
 
-    config=dict(
-        name='efficientdet_d0',
-        backbone_name=bb_name,
-        image_size=(qry_img_size, qry_img_size),
-        fpn_channels=64,
-        fpn_cell_repeats=3,
-        box_class_repeats=3,
-        pad_type='',
-        redundant_bias=False,
-        backbone_args=dict(drop_path_rate=0.),# checkpoint_path="tf_efficientnet_b1_ns-99dd0c41.pth"),
-        #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/efficientdet_d0-f3276ba8.pth',
-    )
+    if FLAGS.model == 'd0':
+        model_name = 'efficientdet_d0'
+        bb_name = 'efficientnet_b0'
+        load_ckpt = 'efficientdet_d0-f3276ba8.pth'
+        config=dict(
+            name=model_name,
+            backbone_name=bb_name,
+            image_size=(qry_img_size, qry_img_size),
+            fpn_channels=64,
+            fpn_cell_repeats=3,
+            box_class_repeats=3,
+            pad_type='',
+            redundant_bias=False,
+            backbone_args=dict(drop_path_rate=FLAGS.dropout),# checkpoint_path="tf_efficientnet_b1_ns-99dd0c41.pth"),
+            #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/efficientdet_d0-f3276ba8.pth',
+        )
+    elif FLAGS.model == 'd1':
+        model_name = 'efficientdet_d1'
+        bb_name = 'efficientnet_b1'
+        load_ckpt = 'efficientdet_d1-bb7e98fe.pth'
+        config=dict(
+            name='efficientdet_d1',
+            backbone_name='efficientnet_b1',
+            image_size=(640, 640),
+            fpn_channels=88,
+            fpn_cell_repeats=4,
+            box_class_repeats=3,
+            pad_type='',
+            redundant_bias=False,
+            backbone_args=dict(drop_path_rate=FLAGS.dropout),
+            #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/efficientdet_d1-bb7e98fe.pth',
+        )
+    elif FLAGS.model == 'd3':
+        model_name = 'tf_efficientdet_d3'
+        bb_name = 'tf_efficientnet_b3'
+        load_ckpt = 'tf_efficientdet_d3_47-0b525f35.pth'
+        config=dict(
+            name='tf_efficientdet_d3',
+            backbone_name='tf_efficientnet_b3',
+            image_size=(640, 640),
+            fpn_channels=160,
+            fpn_cell_repeats=6,
+            box_class_repeats=4,
+            backbone_args=dict(drop_path_rate=FLAGS.dropout),
+            #url='https://github.com/rwightman/efficientdet-pytorch/releases/download/v0.1/tf_efficientdet_d3_47-0b525f35.pth',
+        )
+
 
     config = OmegaConf.create(config)
 
@@ -123,7 +156,7 @@ def main(argv):
 
     # create the base model
     model = EfficientDet(h)
-    state_dict = torch.load("efficientdet_d0-f3276ba8.pth")
+    state_dict = torch.load("checkpoints/val_loss_1.604967713356018.pth")
     if FLAGS.bb != 'b0':
         load_state_dict = {}
         for k,v in state_dict.items():
@@ -132,7 +165,7 @@ def main(argv):
                 load_state_dict[k] = v
     else:
         load_state_dict = state_dict
-    model.load_state_dict(load_state_dict, strict=False)
+    model.load_state_dict(load_state_dict, strict=True)
     #load_checkpoint(model,"efficientdet_d0-f3276ba8.pth")
     model.reset_head(num_classes=FLAGS.n_way, num_channels=FLAGS.num_channels)
 

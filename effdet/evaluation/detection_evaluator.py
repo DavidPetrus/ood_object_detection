@@ -265,7 +265,7 @@ class ObjectDetectionEvaluator(DetectionEvaluator):
             detected_class_labels=detection_classes,
             detected_masks=detection_masks)
 
-    def evaluate(self,task_categories,batch_cats):
+    def evaluate(self,task_categories,batch_cats=None):
         """Compute evaluation result.
         Returns:
           A dictionary of metrics with the following fields -
@@ -282,7 +282,9 @@ class ObjectDetectionEvaluator(DetectionEvaluator):
             pascal_metrics[self._metric_names[1]] = metrics['mean_corloc']
         category_index = create_category_index(self._categories)
         for idx,category_name in enumerate(task_categories):
-            if idx not in batch_cats: continue
+            if not batch_cats is None:
+                if idx not in batch_cats: continue
+                
             display_name = 'AP@{}IOU/{}'.format(self._matching_iou_threshold, category_name)
             pascal_metrics[display_name] = metrics['per_class_ap'][idx]
 
