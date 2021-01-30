@@ -59,8 +59,8 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
         else:
             self.feat_dir = 'train_activ'
 
-        self.val_freq = int(FLAGS.val_freq/FLAGS.num_workers)
-        self.num_val_cats = int(FLAGS.num_val_cats/FLAGS.num_workers)
+        self.val_freq = int(FLAGS.val_freq/max(FLAGS.num_workers,1))
+        self.num_val_cats = int(FLAGS.num_val_cats/max(FLAGS.num_workers,1))
         self.exp = FLAGS.exp
         self.n_way = FLAGS.n_way
         self.num_workers = FLAGS.num_workers
