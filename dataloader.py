@@ -65,7 +65,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
         self.n_way = FLAGS.n_way
         self.num_workers = FLAGS.num_workers
 
-        self.anchors = Anchors.from_config(model_config)#.to('cuda:0', non_blocking=True)
+        self.anchors = Anchors.from_config(model_config)
         self.anchor_labeler = AnchorLabeler(self.anchors, self.n_way, match_threshold=0.5)
 
         self.transform = transforms_coco_eval(self.qry_img_size,interpolation='bilinear',use_prefetcher=True)
@@ -100,46 +100,46 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                 task_cats = random.sample(self.lvis_train_cats,self.n_way)
 
             print("Val:",val_iter,task_cats,i,val_count)
-            try:
-                for cat_ix,cat in enumerate(task_cats):
-                    support_imgs = random.sample(list(self.web_sample[cat]),self.num_sup)
-                    for img_path in support_imgs:
-                        img_load = Image.open(img_path).convert('RGB')
-                        width,height = img_load.size
-                        img_trans,_ = self.transform(img_load,{'target_size':self.supp_size})
-                        support_img_batch.append(torch.from_numpy(img_trans))
-                        img_cat = task_cats.index(cat)
-                        supp_cls_lab.append(img_cat)
+            #try:
+            for cat_ix,cat in enumerate(task_cats):
+                support_imgs = random.sample(list(self.web_sample[cat]),self.num_sup)
+                for img_path in support_imgs:
+                    img_load = Image.open(img_path).convert('RGB')
+                    width,height = img_load.size
+                    img_trans,_ = self.transform(img_load,{'target_size':self.supp_size})
+                    support_img_batch.append(torch.from_numpy(img_trans))
+                    img_cat = task_cats.index(cat)
+                    supp_cls_lab.append(img_cat)
 
-                    query_imgs = random.sample(list(self.lvis_sample[cat]),self.num_qry)
+                query_imgs = random.sample(list(self.lvis_sample[cat]),self.num_qry)
 
-                    for img_path in query_imgs:
-                        cat_idxs = []
-                        for lv_ix,lv_cat in enumerate(self.lvis_cats[img_path]):
-                            if lv_cat in task_cats: cat_idxs.append(lv_ix)
+                for img_path in query_imgs:
+                    cat_idxs = []
+                    for lv_ix,lv_cat in enumerate(self.lvis_cats[img_path]):
+                        if lv_cat in task_cats: cat_idxs.append(lv_ix)
 
-                        img_bboxes = np.asarray(self.lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
-                        img_bboxes[:,2:] = img_bboxes[:,:2]+img_bboxes[:,2:]
-                        img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
-                        
-                        img_cats = np.asarray(self.lvis_cats[img_path])[cat_idxs]
-                        img_cat_ids = []
-                        for a_ix in range(len(img_cats)): img_cat_ids.append(task_cats.index(img_cats[a_ix]))
-                        img_cat_ids = np.array(img_cat_ids)
+                    img_bboxes = np.asarray(self.lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
+                    img_bboxes[:,2:] = img_bboxes[:,:2]+img_bboxes[:,2:]
+                    img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
+                    
+                    img_cats = np.asarray(self.lvis_cats[img_path])[cat_idxs]
+                    img_cat_ids = []
+                    for a_ix in range(len(img_cats)): img_cat_ids.append(task_cats.index(img_cats[a_ix]))
+                    img_cat_ids = np.array(img_cat_ids)
 
-                        target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
-                        img_load = Image.open(img_path).convert('RGB')
-                        img_trans,target = self.transform(img_load,target)
+                    target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
+                    img_load = Image.open(img_path).convert('RGB')
+                    img_trans,target = self.transform(img_load,target)
 
-                        query_img_batch.append(torch.from_numpy(img_trans))
-                        qry_bbox_ls.append(torch.from_numpy(target['bbox']))#.cuda(non_blocking=True))
-                        qry_cls_ls.append(torch.from_numpy(target['cls']+1))#.cuda(non_blocking=True))
+                    query_img_batch.append(torch.from_numpy(img_trans))
+                    qry_bbox_ls.append(torch.from_numpy(target['bbox']))
+                    qry_cls_ls.append(torch.from_numpy(target['cls']+1))
 
-            except Exception as e:
-                with open(self.exp+'dataloader.txt','a') as fp:
-                    fp.write(str(e))
-                print("!!!!!!!!!!!!!!!!!!!!!!!",e)
-                continue
+            #except Exception as e:
+            #    with open(self.exp+'dataloader.txt','a') as fp:
+            #        fp.write(str(e))
+            #    print("!!!!!!!!!!!!!!!!!!!!!!!",e)
+            #    continue
 
             supp_tup = list(zip(support_img_batch,supp_cls_lab))
             random.shuffle(supp_tup)
@@ -163,7 +163,7 @@ def load_metadata_dicts():
         base_path = "/home/ubuntu/"
         feat_dir = 'train_feats'
     else:
-        base_path = '/home-mscluster/dvanniekerk/'
+        base_path = '/root/'
         feat_dir = 'train_activ'
 
     if FLAGS.fpn:
@@ -190,19 +190,16 @@ def load_metadata_dicts():
             lvis_all_cats[row['name']] = int(row['image_count'])
     lvis_all_cats = {k: v for k, v in sorted(lvis_all_cats.items(), key=lambda item: item[1])}
     lvis_train_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats:]
-    lvis_val_cats = list(lvis_all_cats.keys())[-300:-300+FLAGS.num_val_cats]
+    lvis_val_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats-FLAGS.num_val_cats:-FLAGS.num_train_cats]
 
     lvis_cats = {}
     lvis_bboxes = {}
     with open(base_path+'LVIS/lvis_annots.txt','r') as fp: lines = fp.readlines()
     for line in lines:
         splits = line.split(';')
-        if FLAGS.ubuntu:
-            lvis_cats[splits[0].replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')] = ast.literal_eval(splits[1])
-            lvis_bboxes[splits[0].replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')] = ast.literal_eval(splits[2])
-        else:
-            lvis_cats[splits[0]] = ast.literal_eval(splits[1])
-            lvis_bboxes[splits[0]] = ast.literal_eval(splits[2])
+        lvis_cats[splits[0].replace('/home-mscluster/dvanniekerk/',base_path)] = ast.literal_eval(splits[1])
+        lvis_bboxes[splits[0].replace('/home-mscluster/dvanniekerk/',base_path)] = ast.literal_eval(splits[2])
+
 
     lvis_sample = {}
     added = 0
@@ -219,7 +216,7 @@ def load_metadata_dicts():
             #    continue
             add_to_sample = True
             if splits[0] in lvis_train_cats:
-                set_cats = set(lvis_cats[img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/')]) if FLAGS.ubuntu else set(lvis_cats[img])
+                set_cats = set(lvis_cats[img.replace('/home-mscluster/dvanniekerk/',base_path)])
                 for img_cat in set_cats:
                     if img_cat in lvis_val_cats:
                         add_to_sample = False
@@ -230,10 +227,8 @@ def load_metadata_dicts():
                 not_added += 1
                 continue
 
-            if FLAGS.ubuntu:
-                cat_imgs.append(img.replace('/home-mscluster/dvanniekerk/','/home/ubuntu/'))
-            else:
-                cat_imgs.append(img)
+            cat_imgs.append(img.replace('/home-mscluster/dvanniekerk/',base_path))
+
         lvis_sample[splits[0]] = cat_imgs
         #else:
         #    lvis_sample[splits[0]] = ast.literal_eval(splits[1])
