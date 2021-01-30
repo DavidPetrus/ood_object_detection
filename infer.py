@@ -30,7 +30,7 @@ import wandb
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string('exp','','')
-flags.DEFINE_bool('ubuntu',True,'')
+flags.DEFINE_bool('ubuntu',False,'')
 
 flags.DEFINE_integer('log_freq',50,'')
 flags.DEFINE_integer('num_workers',16,'')
