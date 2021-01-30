@@ -34,7 +34,7 @@ flags.DEFINE_bool('ubuntu',True,'')
 
 flags.DEFINE_integer('log_freq',50,'')
 flags.DEFINE_integer('num_workers',16,'')
-flags.DEFINE_integer('num_train_cats',250,'')
+flags.DEFINE_integer('num_train_cats',400,'')
 flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('val_freq',100,'')
 flags.DEFINE_integer('n_way',2,'')
