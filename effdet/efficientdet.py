@@ -381,7 +381,7 @@ class HeadNet(nn.Module):
 
         # Build convolution repeats
         conv_fn = SeparableConv2d if config.separable_conv else ConvBnAct2d
-        if num_channels_flag is None:
+        if not num_channels_flag is None:
             in_conv = dict(
                 in_channels=config.fpn_channels, out_channels=num_channels, kernel_size=3,
                 padding=config.pad_type, bias=config.redundant_bias, act_layer=None, norm_layer=None)
@@ -616,10 +616,6 @@ class EfficientDet(nn.Module):
         self.class_net = HeadNet(self.config, num_outputs=self.config.num_classes)
         self.box_net = HeadNet(self.config, num_outputs=4)
         num_anchors = len(config.aspect_ratios) * config.num_scales
-        #anchor_kwargs = dict(
-        #    in_channels=config.fpn_channels, out_channels=num_anchors, kernel_size=3,
-        #    padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
-        #self.anchor_net = SeparableConv2d(**anchor_kwargs)
 
         for n, m in self.named_modules():
             if 'backbone' not in n:
