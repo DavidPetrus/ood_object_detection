@@ -599,7 +599,7 @@ class AnchorNet(nn.Module):
         for level in range(len(x)):
             x_level = x[level]
             anch_l1 = self.act(self.norm_layer(self.anchor_layer(x_level)))
-            outputs.append(self.anchor_net(anch_l1).sigmoid())
+            outputs.append(self.anchor_out(anch_l1).sigmoid())
         return outputs
 
 

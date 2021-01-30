@@ -61,7 +61,7 @@ flags.DEFINE_float('bbox_coeff',20.,'')
 flags.DEFINE_float('alpha',0.03,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
 flags.DEFINE_integer('num_channels',48,'')
-flags.DEFINE_bool('anchor_at_start',True,'')
+flags.DEFINE_bool('at_start',True,'')
 
 
 
@@ -156,7 +156,8 @@ def main(argv):
 
     # create the base model
     model = EfficientDet(h)
-    state_dict = torch.load("checkpoints/val_loss_1.604967713356018.pth")
+    state_dict = torch.load(load_ckpt)
+    #state_dict = torch.load("checkpoints/val_loss_1.604967713356018.pth")
     if FLAGS.bb != 'b0':
         load_state_dict = {}
         for k,v in state_dict.items():
@@ -173,7 +174,7 @@ def main(argv):
     print(model_config['num_classes'])
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
 
-    anchor_net = AnchorNet(h, at_start=FLAGS.anchor_at_start)
+    anchor_net = AnchorNet(h, at_start=FLAGS.at_start)
 
     anchors = Anchors.from_config(model_config).to('cuda')
 
