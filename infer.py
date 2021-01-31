@@ -237,7 +237,7 @@ def main(argv):
         supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
 
         #inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=0.001)
-        inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=self.anchor_net.inner_lr)
+        inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=anchor_net.inner_lr)
 
         supp_cls_labs = supp_cls_labs.to('cuda')
         qry_cls_anchors = [cls_anchor.to('cuda:0') for cls_anchor in qry_labs['cls_anchor']]
