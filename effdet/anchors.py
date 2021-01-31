@@ -36,6 +36,10 @@ from typing import List
 from effdet.object_detection import ArgMaxMatcher, FasterRcnnBoxCoder, BoxList, IouSimilarity, TargetAssigner
 from .soft_nms import batched_soft_nms
 
+from absl import flags
+
+FLAGS = flags.FLAGS
+
 
 # The minimum score to consider a logit for identifying detections.
 MIN_CLASS_SCORE = -5.0
@@ -134,12 +138,16 @@ def generate_detections(
         boxes = clip_boxes_xyxy(boxes, img_size / img_scale)  # clip before NMS better?
 
     scores = cls_outputs.sigmoid().squeeze(1).float()
+    idxs = scores > 0.01
+    boxes = boxes[idxs]
+    scores = scores[idxs]
+    classes = classes[idxs]
     if soft_nms:
         top_detection_idx, soft_scores = batched_soft_nms(
             boxes, scores, classes, method_gaussian=True, iou_threshold=0.3, score_threshold=.001)
         scores[top_detection_idx] = soft_scores
     else:
-        top_detection_idx = batched_nms(boxes, scores, classes, iou_threshold=0.5)
+        top_detection_idx = batched_nms(boxes, scores, classes, iou_threshold=FLAGS.nms_thresh)
 
     # keep only top max_det_per_image scoring predictions
     top_detection_idx = top_detection_idx[:max_det_per_image]

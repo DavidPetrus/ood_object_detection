@@ -42,6 +42,7 @@ flags.DEFINE_integer('num_sup',25,'')
 flags.DEFINE_integer('num_qry',10,'')
 flags.DEFINE_integer('meta_batch_size',2,'')
 flags.DEFINE_integer('img_size',256,'')
+flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('model','d3','')
 flags.DEFINE_float('dropout',0.,'')
@@ -62,6 +63,8 @@ flags.DEFINE_float('alpha',0.03,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
 flags.DEFINE_integer('num_channels',48,'')
 flags.DEFINE_bool('at_start',True,'')
+flags.DEFINE_float('nms_thresh',0.3,'')
+flags.DEFINE_float('mat_dets',30,'')
 
 
 
@@ -78,7 +81,7 @@ def main(argv):
 
     qry_img_size = 640 if FLAGS.large_qry else 256
 
-    def inner_grad_clip(grads):
+    '''def inner_grad_clip(grads):
         max_norm = 10.
         total_norm = 0.
         for t in grads:
@@ -91,7 +94,7 @@ def main(argv):
         clip_coef = max_norm / (total_norm + 1e-6)
         if clip_coef >= 0:
             return grads
-        return [t if t is None else t.mul(clip_coef) for t in grads]
+        return [t if t is None else t.mul(clip_coef) for t in grads]'''
 
     if FLAGS.bb == 'b0':
         bb_name = 'efficientnet_b0'
@@ -156,8 +159,8 @@ def main(argv):
 
     # create the base model
     model = EfficientDet(h)
-    state_dict = torch.load(load_ckpt)
-    #state_dict = torch.load("checkpoints/val_loss_1.604967713356018.pth")
+    #state_dict = torch.load(load_ckpt)
+    state_dict = torch.load("checkpoints/val_loss_1.604967713356018.pth")()
     if FLAGS.bb != 'b0':
         load_state_dict = {}
         for k,v in state_dict.items():
@@ -260,12 +263,12 @@ def main(argv):
             for inner_ix in range(FLAGS.steps):
                 class_out, anchor_inps = fast_model(supp_activs, mode='supp_cls')
                 if inner_ix == 0 or not FLAGS.at_start:
-                    target_mul = anchor_net(anchor_inps)
+                    target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
                     supp_cls_anchors = [torch.cat([tm_l.unsqueeze(2)*supp_cls_labs[:,c].view(FLAGS.num_sup*FLAGS.n_way,1,1,1,1) for c in range(FLAGS.n_way)],dim=2)
                         .view(FLAGS.num_sup*FLAGS.n_way,num_anchs*FLAGS.n_way,tm_l.shape[2],tm_l.shape[3]) for tm_l in target_mul]
                     supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
                 supp_class_loss = support_loss_fn(class_out, supp_cls_anchors, supp_num_positives)
-                inner_opt.step(supp_class_loss, grad_callback=inner_grad_clip)
+                inner_opt.step(supp_class_loss)
 
             with torch.set_grad_enabled(not val_iter):
                 qry_class_out = fast_model(qry_activs, mode='qry_cls')
@@ -280,7 +283,7 @@ def main(argv):
 
             for b_ix in range(FLAGS.n_way*FLAGS.num_qry):
                 detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
-                    None, qry_img_size, max_det_per_image=100, soft_nms=False).cpu().numpy()
+                    None, qry_img_size, max_det_per_image=FLAGS.max_dets, soft_nms=False).cpu().numpy()
                 evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})
                 bboxes_yxyx = np.concatenate([detections[:,1:2],detections[:,0:1],detections[:,3:4],detections[:,2:3]],axis=1)
                 evaluator.add_single_detected_image_info(b_ix,{'bbox': bboxes_yxyx, 'scores': detections[:,4], 'cls': detections[:,5]})
