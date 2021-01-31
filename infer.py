@@ -324,7 +324,7 @@ def main(argv):
             train_iter += 1
 
         if (not val_iter and prev_val_iter):
-            log_metrics = {'iteration':train_iter}
+            log_metrics = {'iteration':train_iter,'inner_lr':anchor_net.inner_lr,'alpha':anchor_net.alpha}
             for met_key in val_metrics.keys():
                 log_metrics[met_key] = val_metrics[met_key]/FLAGS.num_val_cats
             wandb.log(log_metrics)
@@ -338,7 +338,7 @@ def main(argv):
 
             val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
         elif not val_iter and (log_count >= FLAGS.log_freq):
-            log_metrics = {'iteration':train_iter,'inner_lr':anchor_net.inner_lr}
+            log_metrics = {'iteration':train_iter}
             for met_key in iter_metrics.keys():
                 log_metrics[met_key] = iter_metrics[met_key]/log_count
             log_metrics['meta_norm'] = meta_norm/(log_count/FLAGS.meta_batch_size)
