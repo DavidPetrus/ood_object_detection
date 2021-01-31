@@ -180,7 +180,7 @@ def load_metadata_dicts():
 
     start = time.time()
 
-    cats_not_to_incl = ['peach','yogurt','crumb','stirrup','hook']
+    cats_not_to_incl = ['peach','yogurt','crumb','stirrup','hook','zucchini','cherry','pea_(food)']
 
     lvis_all_cats = {}
     with open(base_path+"LVIS/lvis_train_cats.csv",'r') as fp:

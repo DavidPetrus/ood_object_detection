@@ -58,13 +58,14 @@ flags.DEFINE_float('meta_lr',0.001,'')
 flags.DEFINE_float('inner_lr',0.003,'')
 flags.DEFINE_integer('steps',1,'')
 flags.DEFINE_float('gamma',0.,'')
-flags.DEFINE_float('bbox_coeff',20.,'')
+flags.DEFINE_float('bbox_coeff',5.,'')
 flags.DEFINE_float('alpha',0.03,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
 flags.DEFINE_integer('num_channels',48,'')
 flags.DEFINE_bool('at_start',True,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
-flags.DEFINE_float('mat_dets',30,'')
+flags.DEFINE_float('mat_dets',10,'')
+flags.DEFINE_bool('learn_inner',False,'')
 
 
 
@@ -236,7 +237,7 @@ def main(argv):
         supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
 
         #inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=0.001)
-        inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=FLAGS.inner_lr)
+        inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=self.anchor_net.inner_lr)
 
         supp_cls_labs = supp_cls_labs.to('cuda')
         qry_cls_anchors = [cls_anchor.to('cuda:0') for cls_anchor in qry_labs['cls_anchor']]
