@@ -27,7 +27,7 @@ def default_detection_model_configs():
     h.image_size = (640, 640)
 
     # dataset specific head parameters
-    h.num_classes = 90
+    h.num_classes = FLAGS.pretrain_classes
 
     # feature + anchor config
     h.min_level = 3
