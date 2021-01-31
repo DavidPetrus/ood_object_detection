@@ -313,7 +313,8 @@ class SupportLoss(nn.Module):
             self,
             cls_outputs: List[torch.Tensor],
             cls_targets: List[torch.Tensor],
-            num_positives: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            num_positives: torch.Tensor,
+            alpha) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         l_fn = class_loss_fn
         if not torch.jit.is_scripting() and self.use_jit:
@@ -323,5 +324,5 @@ class SupportLoss(nn.Module):
 
         return l_fn(
             cls_outputs, cls_targets, num_positives,
-            num_classes=self.num_classes, alpha=self.alpha, gamma=self.gamma,
+            num_classes=self.num_classes, alpha=alpha, gamma=self.gamma,
             label_smoothing=self.label_smoothing, legacy_focal=self.legacy_focal)

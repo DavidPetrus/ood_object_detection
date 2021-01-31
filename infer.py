@@ -64,8 +64,9 @@ flags.DEFINE_integer('supp_level_offset',2,'')
 flags.DEFINE_integer('num_channels',48,'')
 flags.DEFINE_bool('at_start',True,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
-flags.DEFINE_float('mat_dets',10,'')
+flags.DEFINE_float('max_dets',10,'')
 flags.DEFINE_bool('learn_inner',False,'')
+flags.DEFINE_bool('learn_alpha',False,'')
 
 
 
@@ -268,7 +269,7 @@ def main(argv):
                     supp_cls_anchors = [torch.cat([tm_l.unsqueeze(2)*supp_cls_labs[:,c].view(FLAGS.num_sup*FLAGS.n_way,1,1,1,1) for c in range(FLAGS.n_way)],dim=2)
                         .view(FLAGS.num_sup*FLAGS.n_way,num_anchs*FLAGS.n_way,tm_l.shape[2],tm_l.shape[3]) for tm_l in target_mul]
                     supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
-                supp_class_loss = support_loss_fn(class_out, supp_cls_anchors, supp_num_positives)
+                supp_class_loss = support_loss_fn(class_out, supp_cls_anchors, supp_num_positives, anchor_net.alpha)
                 inner_opt.step(supp_class_loss)
 
             with torch.set_grad_enabled(not val_iter):
@@ -337,7 +338,7 @@ def main(argv):
 
             val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
         elif not val_iter and (log_count >= FLAGS.log_freq):
-            log_metrics = {'iteration':train_iter}
+            log_metrics = {'iteration':train_iter,'inner_lr':anchor_net.inner_lr}
             for met_key in iter_metrics.keys():
                 log_metrics[met_key] = iter_metrics[met_key]/log_count
             log_metrics['meta_norm'] = meta_norm/(log_count/FLAGS.meta_batch_size)

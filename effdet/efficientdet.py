@@ -576,7 +576,12 @@ class AnchorNet(nn.Module):
             self.inner_lr = nn.Parameter(torch.tensor(FLAGS.inner_lr))
         else:
             self.inner_lr = FLAGS.inner_lr
-            
+
+        if FLAGS.learn_alpha:
+            self.alpha = nn.Parameter(torch.tensor(FLAGS.alpha))
+        else:
+            self.alpha = FLAGS.alpha
+
         num_anchors = len(config.aspect_ratios) * config.num_scales
         if at_start:
             anchor_kwargs = dict(
