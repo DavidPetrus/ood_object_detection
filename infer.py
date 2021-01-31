@@ -202,7 +202,7 @@ def main(argv):
             if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
                 module.eval()
             
-        model.apply(set_bn_eval)
+        model.backbone.apply(set_bn_eval)
 
     anchor_net.to('cuda')
 
