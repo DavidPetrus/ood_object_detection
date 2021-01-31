@@ -95,7 +95,7 @@ def clip_boxes_xyxy(boxes: torch.Tensor, size: torch.Tensor):
 def generate_detections(
         cls_outputs, box_outputs, anchor_boxes, indices, classes,
         img_scale: Optional[torch.Tensor], img_size: Optional[torch.Tensor],
-        max_det_per_image: int = 100, soft_nms: bool = False, nms_thresh=0.3):
+        max_det_per_image: int = 100, soft_nms: bool = False):
     """Generates detections with RetinaNet model outputs and anchors.
 
     Args:
@@ -147,7 +147,7 @@ def generate_detections(
             boxes, scores, classes, method_gaussian=True, iou_threshold=0.3, score_threshold=.001)
         scores[top_detection_idx] = soft_scores
     else:
-        top_detection_idx = batched_nms(boxes, scores, classes, iou_threshold=nms_thresh)
+        top_detection_idx = batched_nms(boxes, scores, classes, iou_threshold=0.3)
 
     # keep only top max_det_per_image scoring predictions
     top_detection_idx = top_detection_idx[:max_det_per_image]

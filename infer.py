@@ -64,7 +64,7 @@ flags.DEFINE_integer('supp_level_offset',2,'')
 flags.DEFINE_integer('num_channels',48,'')
 flags.DEFINE_bool('at_start',True,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
-flags.DEFINE_float('max_dets',10,'')
+flags.DEFINE_integer('max_dets',10,'')
 flags.DEFINE_bool('learn_inner',False,'')
 flags.DEFINE_bool('learn_alpha',False,'')
 
