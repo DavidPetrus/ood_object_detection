@@ -44,7 +44,7 @@ flags.DEFINE_integer('meta_batch_size',4,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
 
-flags.DEFINE_string('load_ckpt','','')
+flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('only_final',True,'')
 flags.DEFINE_string('model','d3','')
 flags.DEFINE_float('dropout',0.,'')
@@ -63,7 +63,7 @@ flags.DEFINE_float('gamma',0.,'')
 flags.DEFINE_float('bbox_coeff',5.,'')
 flags.DEFINE_float('alpha',0.03,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
-flags.DEFINE_bool('at_start',True,'')
+flags.DEFINE_bool('at_start',False,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
 flags.DEFINE_integer('max_dets',10,'')
 flags.DEFINE_bool('learn_inner',False,'')
@@ -214,10 +214,11 @@ def main(argv):
 
     learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
 
-    if FLAGS.inner:
+    if FLAGS.learn_inner:
         meta_param_groups = [{'params': model.parameters()},{'params': anchor_net.parameters()},{'params':learnable_lr}]
     else:
         meta_param_groups = [{'params': model.parameters()},{'params': anchor_net.parameters()}]
+        learnable_lr.requires_grad = False
 
     if FLAGS.optim == 'adam':
         meta_optimizer = torch.optim.Adam(meta_param_groups, lr=FLAGS.meta_lr)
