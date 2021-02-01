@@ -32,24 +32,22 @@ flags.DEFINE_bool('ubuntu',True,'')
 
 flags.DEFINE_integer('log_freq',50,'')
 flags.DEFINE_integer('num_workers',16,'')
-flags.DEFINE_integer('max_lvis_load',4000,'')
-flags.DEFINE_integer('num_preloads',5,'')
-flags.DEFINE_integer('num_preload_cats',100,'')
 flags.DEFINE_integer('num_train_cats',250,'')
 flags.DEFINE_integer('num_val_cats',50,'')
-flags.DEFINE_integer('num_val_imgs',20,'')
 flags.DEFINE_integer('val_freq',100,'')
 flags.DEFINE_integer('n_way',2,'')
 flags.DEFINE_integer('num_sup',25,'')
 flags.DEFINE_integer('num_qry',10,'')
 flags.DEFINE_integer('meta_batch_size',2,'')
 flags.DEFINE_integer('img_size',256,'')
+flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_bool('random_trans',False,'')
 flags.DEFINE_string('model','d0','')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
 flags.DEFINE_float('dropout',0.2,'')
+flags.DEFINE_bool('freeze_bn',False,'')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
 flags.DEFINE_bool('train_bb',True,'')
 flags.DEFINE_bool('train_fpn',True,'')
@@ -137,11 +135,13 @@ def main(argv):
 
     # create the base model
     model = EfficientDet(h)
-    state_dict = torch.load(load_ckpt)
+    #state_dict = torch.load(load_ckpt)
+    state_dict = torch.load("checkpoints/d3_pre_aug_8001_1.2743672132492065.pth")
     load_state_dict = state_dict
     model.load_state_dict(load_state_dict, strict=True)
     #load_checkpoint(model,"efficientdet_d0-f3276ba8.pth")
-    model.reset_head(num_classes=FLAGS.num_train_cats)
+
+    #model.reset_head(num_classes=FLAGS.num_train_cats)
 
     model_config = model.config
     print(model_config['num_classes'])
@@ -165,20 +165,23 @@ def main(argv):
 
     if not FLAGS.train_mode:
         model.eval()
-    elif FLAGS.freeze_bb_bn:
+    elif FLAGS.freeze_bb_bn or FLAGS.freeze_bn:
         def set_bn_eval(module):
             if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
                 module.eval()
             
-        model.backbone.apply(set_bn_eval)
+        if FLAGS.freeze_bn:
+            model.apply(set_bn_eval)
+        else:
+            model.backbone.apply(set_bn_eval)
 
     #if FLAGS.fpn:
     if FLAGS.optim == 'adam':
         if FLAGS.train_bb:
-            meta_optimizer = torch.optim.Adam([{'params': model.fpn.parameters(), 'lr':0.}, \
+            meta_optimizer = torch.optim.Adam([{'params': model.backbone.parameters()},{'params': model.fpn.parameters()}, \
                 {'params': model.class_net.parameters()},{'params': model.box_net.parameters()}], lr=FLAGS.meta_lr)
         else:
-            meta_optimizer = torch.optim.Adam([{'params': model.backbone.parameters(), 'lr':0.},{'params': model.fpn.parameters(), 'lr':0.}, \
+            meta_optimizer = torch.optim.Adam([{'params': model.fpn.parameters(), 'lr':0.}, \
                 {'params': model.class_net.parameters()},{'params': model.box_net.parameters()}], lr=FLAGS.meta_lr)
     elif FLAGS.optim == 'nesterov':
         meta_optimizer = torch.optim.SGD([{'params': model.parameters()}], lr=FLAGS.meta_lr, momentum=0.9, nesterov=True)
@@ -212,7 +215,10 @@ def main(argv):
             model.eval()
         elif prev_val_iter and not val_iter:
             model.train()
-            model.backbone.apply(set_bn_eval)
+            if FLAGS.freeze_bn:
+                model.apply(set_bn_eval)
+            else:
+                model.backbone.apply(set_bn_eval)
 
         qry_cls_anchors = [cls_anchor.to('cuda:0') for cls_anchor in qry_labs['cls_anchor']]
         qry_bbox_anchors = [bbox_anchor.to('cuda:0') for bbox_anchor in qry_labs['bbox_anchor']]
@@ -270,7 +276,7 @@ def main(argv):
             meta_optimizer.step()
             train_iter += 1
 
-            if train_iter > 200:
+            if 200 < train_iter < 202:
                 meta_optimizer.param_groups[0]['lr'] = FLAGS.meta_lr
                 meta_optimizer.param_groups[1]['lr'] = FLAGS.meta_lr
 
@@ -288,7 +294,7 @@ def main(argv):
                     category_metrics[key] = []
 
             if log_metrics['val_qry_loss'] < min_val_loss:
-                torch.save(model.state_dict,'checkpoints/{}_{}_{}.pth'.format(FLAGS.exp,train_iter,log_metrics['val_qry_loss']))
+                torch.save(model.state_dict(),'checkpoints/{}_{}_{}.pth'.format(FLAGS.exp,train_iter,log_metrics['val_qry_loss']))
                 min_val_loss = log_metrics['val_qry_loss']
 
             val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}

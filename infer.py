@@ -44,6 +44,8 @@ flags.DEFINE_integer('meta_batch_size',2,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
 
+flags.DEFINE_string('load_ckpt','','')
+flags.DEFINE_bool('only_final',True,'')
 flags.DEFINE_string('model','d3','')
 flags.DEFINE_float('dropout',0.,'')
 flags.DEFINE_string('bb','b0','')
@@ -61,7 +63,6 @@ flags.DEFINE_float('gamma',0.,'')
 flags.DEFINE_float('bbox_coeff',5.,'')
 flags.DEFINE_float('alpha',0.03,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
-flags.DEFINE_integer('num_channels',48,'')
 flags.DEFINE_bool('at_start',True,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
 flags.DEFINE_integer('max_dets',10,'')
@@ -162,7 +163,7 @@ def main(argv):
     # create the base model
     model = EfficientDet(h)
     #state_dict = torch.load(load_ckpt)
-    state_dict = torch.load("checkpoints/val_loss_1.604967713356018.pth")()
+    state_dict = torch.load("~/checkpoints/"+FLAGS.load_ckpt)
     if FLAGS.bb != 'b0':
         load_state_dict = {}
         for k,v in state_dict.items():
@@ -173,7 +174,7 @@ def main(argv):
         load_state_dict = state_dict
     model.load_state_dict(load_state_dict, strict=True)
     #load_checkpoint(model,"efficientdet_d0-f3276ba8.pth")
-    model.reset_head(num_classes=FLAGS.n_way, num_channels=FLAGS.num_channels)
+    model.reset_head(num_classes=FLAGS.n_way)
 
     model_config = model.config
     print(model_config['num_classes'])
@@ -206,18 +207,22 @@ def main(argv):
         model.backbone.apply(set_bn_eval)
 
     anchor_net.to('cuda')
+    if FLAGS.only_final:
+        inner_optimizer = torch.optim.SGD([{'params': model.class_net.predict.conv_pw.parameters()}], lr=FLAGS.inner_lr)
+    else:
+        inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=FLAGS.inner_lr)
 
-    #if FLAGS.fpn:
+    learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
+
+    if FLAGS.inner:
+        meta_param_groups = [{'params': model.parameters()},{'params': anchor_net.parameters()},{'params':learnable_lr}]
+    else:
+        meta_param_groups = [{'params': model.parameters()},{'params': anchor_net.parameters()}]
+
     if FLAGS.optim == 'adam':
-        meta_optimizer = torch.optim.Adam([{'params': model.parameters()},{'params': anchor_net.parameters()}], lr=FLAGS.meta_lr)
+        meta_optimizer = torch.optim.Adam(meta_param_groups, lr=FLAGS.meta_lr)
     elif FLAGS.optim == 'nesterov':
-        meta_optimizer = torch.optim.SGD([{'params': model.parameters()},{'params': anchor_net.parameters()}], lr=FLAGS.meta_lr, momentum=0.9, nesterov=True)
-    #else:
-    #    meta_optimizer = torch.optim.Adam([{'params': model.class_net.parameters()},{'params': model.box_net.parameters()}, \
-    #        {'params': anchor_net.parameters()}], lr=FLAGS.meta_lr)
-    #meta_optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-
-    #wandb.watch(model)
+        meta_optimizer = torch.optim.SGD(meta_param_groups, lr=FLAGS.meta_lr, momentum=0.9, nesterov=True)
 
     evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'},{'id':2,'name':'b'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
@@ -236,9 +241,6 @@ def main(argv):
         
         #supp_imgs, supp_labs, qry_imgs, qry_labs = task
         supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
-
-        #inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=0.001)
-        inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=anchor_net.inner_lr)
 
         supp_cls_labs = supp_cls_labs.to('cuda')
         qry_cls_anchors = [cls_anchor.to('cuda:0') for cls_anchor in qry_labs['cls_anchor']]
@@ -261,7 +263,8 @@ def main(argv):
         with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
             qry_activs, qry_box_out = model(feats,mode='not_cls')
 
-        with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter) as (fast_model, inner_opt):
+        with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter,
+            device='cuda', override={'lr': learnable_lr}) as (fast_model, inner_opt):
             for inner_ix in range(FLAGS.steps):
                 class_out, anchor_inps = fast_model(supp_activs, mode='supp_cls')
                 if inner_ix == 0 or not FLAGS.at_start:
@@ -318,13 +321,15 @@ def main(argv):
 
             iter_meta_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
             meta_norm += iter_meta_norm
-            print("Meta Norm:",iter_meta_norm)
+            print(train_iter,datetime.datetime.now(),"Meta Norm:",iter_meta_norm)
             #torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
             meta_optimizer.step()
             train_iter += 1
 
         if (not val_iter and prev_val_iter):
-            log_metrics = {'iteration':train_iter,'inner_lr':anchor_net.inner_lr,'alpha':anchor_net.alpha}
+            inner_lr_log = learnable_lr.data
+            inner_alpha_log = anchor_net.alpha.data if FLAGS.learn_alpha else anchor_net.alpha
+            log_metrics = {'iteration':train_iter,'inner_lr':inner_lr_log,'alpha':inner_alpha_log}
             for met_key in val_metrics.keys():
                 log_metrics[met_key] = val_metrics[met_key]/FLAGS.num_val_cats
             wandb.log(log_metrics)

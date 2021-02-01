@@ -572,11 +572,6 @@ class AnchorNet(nn.Module):
         super(AnchorNet, self).__init__()
         self.config = config
         self.num_levels = config.num_levels
-        if FLAGS.learn_inner:
-            self.inner_lr = nn.Parameter(torch.tensor(FLAGS.inner_lr))
-        else:
-            self.inner_lr = FLAGS.inner_lr
-
         if FLAGS.learn_alpha:
             self.alpha = nn.Parameter(torch.tensor(FLAGS.alpha))
         else:
@@ -652,12 +647,15 @@ class EfficientDet(nn.Module):
         set_config_readonly(self.config)
 
         if reset_class_head:
-            self.class_net = HeadNet(self.config, num_outputs=self.config.num_classes, num_channels_flag=num_channels)
+            self.class_net.predict.conv_pw = create_conv2d(FLAGS.num_channels, num_classes, 1, padding='', bias=True)
+            self.class_net.predict.conv_pw.bias.data.fill_(-math.log((1 - 0.01) / 0.01))
+
+            '''self.class_net = HeadNet(self.config, num_outputs=self.config.num_classes, num_channels_flag=num_channels)
             for n, m in self.class_net.named_modules(prefix='class_net'):
                 if alternate_init:
                     _init_weight_alt(m, n)
                 else:
-                    _init_weight(m, n)
+                    _init_weight(m, n)'''
 
         if reset_box_head:
             self.box_net = HeadNet(self.config, num_outputs=4)
