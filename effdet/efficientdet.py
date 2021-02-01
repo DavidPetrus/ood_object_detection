@@ -578,14 +578,9 @@ class AnchorNet(nn.Module):
             self.alpha = FLAGS.alpha
 
         num_anchors = len(config.aspect_ratios) * config.num_scales
-        if at_start:
-            anchor_kwargs = dict(
-                in_channels=config.fpn_channels, out_channels=48, kernel_size=3,
-                padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
-        else:
-            anchor_kwargs = dict(
-                in_channels=FLAGS.num_channels, out_channels=48, kernel_size=3,
-                padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
+        anchor_kwargs = dict(
+            in_channels=config.fpn_channels, out_channels=48, kernel_size=3,
+            padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
 
         self.anchor_layer = SeparableConv2d(**anchor_kwargs)
         self.norm_layer = nn.BatchNorm2d(48,**config.norm_kwargs)
@@ -647,7 +642,7 @@ class EfficientDet(nn.Module):
         set_config_readonly(self.config)
 
         if reset_class_head:
-            self.class_net.predict.conv_pw = create_conv2d(FLAGS.num_channels, num_classes, 1, padding='', bias=True)
+            self.class_net.predict.conv_pw = create_conv2d(config.fpn_channels, num_classes, 1, padding='', bias=True)
             self.class_net.predict.conv_pw.bias.data.fill_(-math.log((1 - 0.01) / 0.01))
 
             '''self.class_net = HeadNet(self.config, num_outputs=self.config.num_classes, num_channels_flag=num_channels)
