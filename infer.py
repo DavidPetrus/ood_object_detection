@@ -201,13 +201,17 @@ def main(argv):
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
     model.to('cuda')
 
+    def set_bn_train(module):
+        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            module.train()
+
+    def set_bn_eval(module):
+        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            module.eval()
+
     if not FLAGS.train_mode:
         model.eval()
-    elif FLAGS.freeze_bb_bn:
-        def set_bn_eval(module):
-            if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
-                module.eval()
-            
+    elif FLAGS.freeze_bb_bn:    
         model.backbone.apply(set_bn_eval)
 
     anchor_net.to('cuda')
@@ -266,6 +270,9 @@ def main(argv):
 
         if not prev_val_iter and val_iter:
             model.eval()
+            model.apply(set_bn_train)
+            if FLAGS.freeze_bb_bn:
+                model.backbone.apply(set_bn_eval)
             for lr in learnable_lr:
                 lr.requires_grad = False
         elif prev_val_iter and not val_iter:
