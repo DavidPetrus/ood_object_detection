@@ -35,8 +35,8 @@ flags.DEFINE_bool('ubuntu',False,'')
 flags.DEFINE_integer('log_freq',50,'')
 flags.DEFINE_integer('num_workers',16,'')
 flags.DEFINE_integer('num_train_cats',400,'')
-flags.DEFINE_integer('num_val_cats',50,'')
-flags.DEFINE_integer('val_freq',200,'')
+flags.DEFINE_integer('num_val_cats',80,'')
+flags.DEFINE_integer('val_freq',400,'')
 flags.DEFINE_integer('n_way',2,'')
 flags.DEFINE_integer('num_sup',25,'')
 flags.DEFINE_integer('num_qry',10,'')
@@ -45,9 +45,11 @@ flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
+flags.DEFINE_bool('random_trans',True,'')
+flags.DEFINE_bool('supp_aug',False,'')
 flags.DEFINE_bool('only_final',True,'')
 flags.DEFINE_string('model','d3','')
-flags.DEFINE_float('dropout',0.,'')
+flags.DEFINE_float('dropout',0.2,'')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
@@ -61,11 +63,12 @@ flags.DEFINE_float('inner_lr',0.01,'')
 flags.DEFINE_integer('steps',1,'')
 flags.DEFINE_float('gamma',0.,'')
 flags.DEFINE_float('bbox_coeff',5.,'')
-flags.DEFINE_float('alpha',0.03,'')
+flags.DEFINE_float('inner_alpha',0.15,'')
+flags.DEFINE_float('alpha',0.25,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
 flags.DEFINE_bool('at_start',False,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
-flags.DEFINE_integer('max_dets',10,'')
+flags.DEFINE_integer('max_dets',30,'')
 flags.DEFINE_bool('learn_inner',False,'')
 flags.DEFINE_bool('learn_alpha',False,'')
 
@@ -163,7 +166,7 @@ def main(argv):
     # create the base model
     model = EfficientDet(h)
     #state_dict = torch.load(load_ckpt)
-    state_dict = torch.load("~/checkpoints/"+FLAGS.load_ckpt)
+    state_dict = torch.load("../checkpoints/"+FLAGS.load_ckpt)
     if FLAGS.bb != 'b0':
         load_state_dict = {}
         for k,v in state_dict.items():
@@ -197,6 +200,7 @@ def main(argv):
     imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
     model.to('cuda')
+
     if not FLAGS.train_mode:
         model.eval()
     elif FLAGS.freeze_bb_bn:
@@ -210,15 +214,23 @@ def main(argv):
     if FLAGS.only_final:
         inner_optimizer = torch.optim.SGD([{'params': model.class_net.predict.conv_pw.parameters()}], lr=FLAGS.inner_lr)
     else:
-        inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=FLAGS.inner_lr)
+        inner_optimizer = torch.optim.SGD([{'params': model.class_net.predict.conv_pw.parameters(),'lr':FLAGS.inner_lr},
+            {'params': list(model.class_net.conv_rep.parameters())+list(model.class_net.bn_rep.parameters())+
+            list(model.class_net.predict.conv_dw.parameters()),'lr':FLAGS.inner_lr/10}], lr=FLAGS.inner_lr)
 
     learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
 
     if FLAGS.learn_inner:
-        meta_param_groups = [{'params': model.parameters()},{'params': anchor_net.parameters()},{'params':learnable_lr}]
+        meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
+            {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
+            {'params': anchor_net.parameters(),'lr':0.},{'params':learnable_lr,'lr':0.}]
     else:
-        meta_param_groups = [{'params': model.parameters()},{'params': anchor_net.parameters()}]
-        learnable_lr.requires_grad = False
+        meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
+            {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
+            {'params': anchor_net.parameters(),'lr':0.},{'params':learnable_lr,'lr':0.}]
+        
+        for lr in learnable_lr:
+            lr.requires_grad = False
 
     if FLAGS.optim == 'adam':
         meta_optimizer = torch.optim.Adam(meta_param_groups, lr=FLAGS.meta_lr)
@@ -235,6 +247,7 @@ def main(argv):
     log_count = 0
     prev_val_iter = False
     meta_norm = 0.
+    #with torch.autograd.detect_anomaly():
     for task in loader:
         if t_ix == 0: meta_optimizer.zero_grad()
 
@@ -250,11 +263,20 @@ def main(argv):
         
         supp_imgs = (supp_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
         qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
-        #with torch.autograd.detect_anomaly():
 
-        #try:
-        #with torch.autograd.detect_anomaly():
-        #if FLAGS.fpn:
+        if not prev_val_iter and val_iter:
+            model.eval()
+            for lr in learnable_lr:
+                lr.requires_grad = False
+        elif prev_val_iter and not val_iter:
+            model.train()
+            if FLAGS.freeze_bb_bn:
+                model.backbone.apply(set_bn_eval)
+
+            if FLAGS.learn_inner:
+                for lr in learnable_lr:
+                    lr.requires_grad = True
+
         with torch.no_grad():
             supp_activs = model(supp_imgs,mode='supp_bb')
 
@@ -327,10 +349,18 @@ def main(argv):
             meta_optimizer.step()
             train_iter += 1
 
+            if 40 < train_iter < 42:
+                meta_optimizer.param_groups[1]['lr'] = FLAGS.meta_lr
+                meta_optimizer.param_groups[2]['lr'] = FLAGS.meta_lr
+                meta_optimizer.param_groups[3]['lr'] = FLAGS.meta_lr
+
+
         if (not val_iter and prev_val_iter):
-            inner_lr_log = learnable_lr.data
             inner_alpha_log = anchor_net.alpha.data if FLAGS.learn_alpha else anchor_net.alpha
-            log_metrics = {'iteration':train_iter,'inner_lr':inner_lr_log,'alpha':inner_alpha_log}
+            log_metrics = {'iteration':train_iter,'alpha':inner_alpha_log}
+            for lr_ix,lr in enumerate(learnable_lr):
+                log_metrics['inner'+str(lr_ix)] = lr.data
+            
             for met_key in val_metrics.keys():
                 log_metrics[met_key] = val_metrics[met_key]/FLAGS.num_val_cats
             wandb.log(log_metrics)
@@ -364,17 +394,17 @@ def main(argv):
 
         prev_val_iter = val_iter
 
-        #except Exception as e:
-        #    print("!!!!!!!!!!!!!",e)
-        #    with open(FLAGS.exp+'train.txt','a') as fp:
-        #        fp.write(str(e))
-        #    continue
+            #except Exception as e:
+            #    print("!!!!!!!!!!!!!",e)
+            #    with open(FLAGS.exp+'train.txt','a') as fp:
+            #        fp.write(str(e))
+            #    continue
 
 
-        #for pars in model.named_parameters():
-        #    if pars[1].grad is None:
-        #        continue
-        #    print(pars[0],pars[1].grad.abs().min())
+            #for pars in model.named_parameters():
+            #    if pars[1].grad is None:
+            #        continue
+            #    print(pars[0],pars[1].grad.abs().min())
 
 
 

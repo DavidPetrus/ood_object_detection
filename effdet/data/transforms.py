@@ -109,7 +109,7 @@ class ResizePad:
 
 class RandomResizePad:
 
-    def __init__(self, target_size: int, scale: tuple = (0.3, 1.5), interpolation: str = 'random',
+    def __init__(self, target_size: int, scale: tuple = (0.2, 2.), interpolation: str = 'random',
                  fill_color: tuple = (0, 0, 0)):
         self.target_size = _size_tuple(target_size)
         self.scale = scale
@@ -119,7 +119,7 @@ class RandomResizePad:
             self.interpolation = _pil_interp(interpolation)
         self.fill_color = fill_color
 
-    def _get_params(self, img, anno: dict):
+    def _get_params(self, img, anno: dict, scale):
         # Select a random scale factor.
         scale_factor = random.uniform(*self.scale)
         scaled_target_height = scale_factor * anno['target_size']
@@ -140,8 +140,8 @@ class RandomResizePad:
         offset_x = int(max(0.0, float(offset_x)) * random.uniform(0, 1))
         return scaled_h, scaled_w, offset_y, offset_x, img_scale
 
-    def __call__(self, img, anno: dict):
-        scaled_h, scaled_w, offset_y, offset_x, img_scale = self._get_params(img,anno)
+    def __call__(self, img, anno: dict, scale):
+        scaled_h, scaled_w, offset_y, offset_x, img_scale = self._get_params(img,anno,scale)
 
         if isinstance(self.interpolation, (tuple, list)):
             interpolation = random.choice(self.interpolation)

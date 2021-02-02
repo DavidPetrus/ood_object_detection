@@ -60,10 +60,15 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             self.feat_dir = 'train_activ'
 
         self.val_freq = int(FLAGS.val_freq/max(FLAGS.num_workers,1))
-        self.num_val_cats = int(FLAGS.num_val_cats/max(FLAGS.num_workers,1))
+        self.num_val_cats = 4*int(FLAGS.num_val_cats/max(FLAGS.num_workers,1))
         self.exp = FLAGS.exp
         self.n_way = FLAGS.n_way
         self.num_workers = FLAGS.num_workers
+
+        if FLAGS.random_trans:
+            self.train_transform = transforms_coco_train(self.qry_img_size,use_prefetcher=True)
+        else:
+            self.train_transform = transforms_coco_eval(self.qry_img_size,interpolation='bilinear',use_prefetcher=True)
 
         self.anchors = Anchors.from_config(model_config)
         self.anchor_labeler = AnchorLabeler(self.anchors, self.n_way, match_threshold=0.5)
@@ -106,7 +111,10 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                 for img_path in support_imgs:
                     img_load = Image.open(img_path).convert('RGB')
                     width,height = img_load.size
-                    img_trans,_ = self.transform(img_load,{'target_size':self.supp_size})
+                    if FLAGS.supp_aug and not val_iter:
+                        img_trans,_ = self.train_transform(img_load,{'target_size':self.supp_size},(0.8, 1.5))
+                    else:
+                        img_trans,_ = self.transform(img_load,{'target_size':self.supp_size})
                     support_img_batch.append(torch.from_numpy(img_trans))
                     img_cat = task_cats.index(cat)
                     supp_cls_lab.append(img_cat)
@@ -129,7 +137,10 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
 
                     target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
                     img_load = Image.open(img_path).convert('RGB')
-                    img_trans,target = self.transform(img_load,target)
+                    if not val_iter:
+                        img_trans,target = self.train_transform(img_load,target,(0.2,1.8))
+                    else:
+                        img_trans,target = self.transform(img_load,target)
 
                     query_img_batch.append(torch.from_numpy(img_trans))
                     qry_bbox_ls.append(torch.from_numpy(target['bbox']))
@@ -244,9 +255,6 @@ def load_metadata_dicts():
     print(time.time()-start)
 
     return lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats
-
-#colors = [(255,0,0),(0,255,0),(0,0,255),(255,0,255),(0,255,255)]
-#count = 0
 
 
 

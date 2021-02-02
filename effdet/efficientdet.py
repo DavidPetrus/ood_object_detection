@@ -573,9 +573,9 @@ class AnchorNet(nn.Module):
         self.config = config
         self.num_levels = config.num_levels
         if FLAGS.learn_alpha:
-            self.alpha = nn.Parameter(torch.tensor(FLAGS.alpha))
+            self.alpha = nn.Parameter(torch.tensor(FLAGS.inner_alpha))
         else:
-            self.alpha = FLAGS.alpha
+            self.alpha = FLAGS.inner_alpha
 
         num_anchors = len(config.aspect_ratios) * config.num_scales
         anchor_kwargs = dict(
@@ -616,7 +616,7 @@ class EfficientDet(nn.Module):
         self.fpn = BiFpn(self.config, feature_info)
         self.class_net = HeadNet(self.config, num_outputs=self.config.num_classes)
         self.box_net = HeadNet(self.config, num_outputs=4)
-        num_anchors = len(config.aspect_ratios) * config.num_scales
+        self.num_anchors = len(config.aspect_ratios) * config.num_scales
 
         for n, m in self.named_modules():
             if 'backbone' not in n:
@@ -642,7 +642,7 @@ class EfficientDet(nn.Module):
         set_config_readonly(self.config)
 
         if reset_class_head:
-            self.class_net.predict.conv_pw = create_conv2d(config.fpn_channels, num_classes, 1, padding='', bias=True)
+            self.class_net.predict.conv_pw = create_conv2d(self.config.fpn_channels, num_classes*self.num_anchors, 1, padding='', bias=True)
             self.class_net.predict.conv_pw.bias.data.fill_(-math.log((1 - 0.01) / 0.01))
 
             '''self.class_net = HeadNet(self.config, num_outputs=self.config.num_classes, num_channels_flag=num_channels)
