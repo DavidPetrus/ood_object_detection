@@ -16,7 +16,7 @@ IMAGENET_INCEPTION_STD = (0.5, 0.5, 0.5)
 
 class ImageToNumpy:
 
-    def __call__(self, pil_img, annotations: dict):
+    def __call__(self, pil_img, annotations: dict, scale=None):
         np_img = np.array(pil_img, dtype=np.uint8)
         if np_img.ndim < 3:
             np_img = np.expand_dims(np_img, axis=-1)
@@ -79,7 +79,7 @@ class ResizePad:
         self.interpolation = interpolation
         self.fill_color = fill_color
 
-    def __call__(self, img, anno: dict):
+    def __call__(self, img, anno: dict, scale=None):
         width, height = img.size
 
         img_scale_y = anno['target_size'] / height
@@ -121,7 +121,7 @@ class RandomResizePad:
 
     def _get_params(self, img, anno: dict, scale):
         # Select a random scale factor.
-        scale_factor = random.uniform(*self.scale)
+        scale_factor = random.uniform(*scale)
         scaled_target_height = scale_factor * anno['target_size']
         scaled_target_width = scale_factor * anno['target_size']
 
@@ -140,7 +140,7 @@ class RandomResizePad:
         offset_x = int(max(0.0, float(offset_x)) * random.uniform(0, 1))
         return scaled_h, scaled_w, offset_y, offset_x, img_scale
 
-    def __call__(self, img, anno: dict, scale):
+    def __call__(self, img, anno: dict, scale=None):
         scaled_h, scaled_w, offset_y, offset_x, img_scale = self._get_params(img,anno,scale)
 
         if isinstance(self.interpolation, (tuple, list)):
@@ -181,7 +181,7 @@ class RandomFlip:
         do_vertical = random.random() < self.prob if self.vertical else False
         return do_horizontal, do_vertical
 
-    def __call__(self, img, annotations: dict):
+    def __call__(self, img, annotations: dict, scale=None):
         do_horizontal, do_vertical = self._get_params()
         width, height = img.size
 
@@ -233,9 +233,9 @@ class Compose:
     def __init__(self, transforms: list):
         self.transforms = transforms
 
-    def __call__(self, img, annotations: dict):
+    def __call__(self, img, annotations: dict, scale=None):
         for t in self.transforms:
-            img, annotations = t(img, annotations)
+            img, annotations = t(img, annotations, scale=scale)
         return img, annotations
 
 

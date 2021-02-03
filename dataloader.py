@@ -12,7 +12,7 @@ import os
 import glob
 import gc
 
-from effdet.data.transforms import transforms_coco_eval, clip_boxes_
+from effdet.data.transforms import transforms_coco_eval, transforms_coco_train, clip_boxes_
 from effdet.loss import DetectionLoss
 from effdet.anchors import Anchors, AnchorLabeler
 
@@ -64,6 +64,8 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
         self.exp = FLAGS.exp
         self.n_way = FLAGS.n_way
         self.num_workers = FLAGS.num_workers
+        self.supp_aug = FLAGS.supp_aug
+        self.num_zero = FLAGS.num_zero_images
 
         if FLAGS.random_trans:
             self.train_transform = transforms_coco_train(self.qry_img_size,use_prefetcher=True)
@@ -81,7 +83,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
         val_iter = False
 
         for i in range(1000000):
-            if (not val_iter and val_count % self.val_freq == 0):
+            if not val_iter and val_count % self.val_freq == 0:
                 val_iter = True
                 val_count += 1
             elif val_iter and num_val_iters < self.num_val_cats:
@@ -111,7 +113,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                 for img_path in support_imgs:
                     img_load = Image.open(img_path).convert('RGB')
                     width,height = img_load.size
-                    if FLAGS.supp_aug and not val_iter:
+                    if self.supp_aug and not val_iter:
                         img_trans,_ = self.train_transform(img_load,{'target_size':self.supp_size},(0.8, 1.5))
                     else:
                         img_trans,_ = self.transform(img_load,{'target_size':self.supp_size})
@@ -138,13 +140,35 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                     target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
                     img_load = Image.open(img_path).convert('RGB')
                     if not val_iter:
-                        img_trans,target = self.train_transform(img_load,target,(0.2,1.8))
+                        img_trans,target = self.train_transform(img_load,target,(0.4,1.7))
                     else:
                         img_trans,target = self.transform(img_load,target)
 
                     query_img_batch.append(torch.from_numpy(img_trans))
                     qry_bbox_ls.append(torch.from_numpy(target['bbox']))
                     qry_cls_ls.append(torch.from_numpy(target['cls']+1))
+
+            z_ix = 0
+            while z_ix < self.num_zero:
+                if val_iter:
+                    cat = random.sample(self.lvis_val_cats,1)
+                else:
+                    cat = random.sample(self.lvis_train_cats,1)
+                if cat in task_cats: continue
+
+                img_path = random.sample(list(self.lvis_sample[cat]),1)
+                target = {'target_size': 640}
+                img_load = Image.open(img_path).convert('RGB')
+                if not val_iter:
+                    img_trans,target = self.train_transform(img_load,target,(0.4,1.7))
+                else:
+                    img_trans,target = self.transform(img_load,target)
+
+                query_img_batch.append(torch.from_numpy(img_trans))
+                qry_bbox_ls.append(torch.from_numpy(np.array([]).astype(np.float32)))
+                qry_cls_ls.append(torch.from_numpy(np.array([]).astype(np.int64)))
+
+                z_ix += 1
 
             #except Exception as e:
             #    with open(self.exp+'dataloader.txt','a') as fp:

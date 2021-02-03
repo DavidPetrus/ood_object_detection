@@ -35,9 +35,9 @@ flags.DEFINE_bool('ubuntu',False,'')
 flags.DEFINE_integer('log_freq',50,'')
 flags.DEFINE_integer('num_workers',16,'')
 flags.DEFINE_integer('num_train_cats',400,'')
-flags.DEFINE_integer('num_val_cats',80,'')
+flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('val_freq',400,'')
-flags.DEFINE_integer('n_way',2,'')
+flags.DEFINE_integer('n_way',1,'')
 flags.DEFINE_integer('num_sup',25,'')
 flags.DEFINE_integer('num_qry',10,'')
 flags.DEFINE_integer('meta_batch_size',4,'')
@@ -45,11 +45,13 @@ flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
+flags.DEFINE_bool('multi_inner',True,'')
+flags.DEFINE_integer('num_zero_images',10,'')
 flags.DEFINE_bool('random_trans',True,'')
-flags.DEFINE_bool('supp_aug',False,'')
+flags.DEFINE_bool('supp_aug',True,'')
 flags.DEFINE_bool('only_final',False,'')
 flags.DEFINE_string('model','d3','')
-flags.DEFINE_float('dropout',0.2,'')
+flags.DEFINE_float('dropout',0.,'')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
@@ -59,7 +61,7 @@ flags.DEFINE_bool('fpn',True,'')
 flags.DEFINE_bool('large_qry',True,'')
 flags.DEFINE_bool('train_mode',True,'')
 flags.DEFINE_float('meta_lr',0.001,'')
-flags.DEFINE_float('inner_lr',0.2,'')
+flags.DEFINE_float('inner_lr',0.1,'')
 flags.DEFINE_integer('steps',1,'')
 flags.DEFINE_float('gamma',0.,'')
 flags.DEFINE_float('bbox_coeff',5.,'')
@@ -70,7 +72,7 @@ flags.DEFINE_bool('at_start',False,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
 flags.DEFINE_integer('max_dets',30,'')
 flags.DEFINE_bool('learn_inner',True,'')
-flags.DEFINE_bool('learn_alpha',True,'')
+flags.DEFINE_bool('learn_alpha',False,'')
 
 
 
@@ -218,9 +220,13 @@ def main(argv):
     if FLAGS.only_final:
         inner_optimizer = torch.optim.SGD([{'params': model.class_net.predict.conv_pw.parameters()}], lr=FLAGS.inner_lr)
     else:
-        inner_optimizer = torch.optim.SGD([{'params': model.class_net.predict.conv_pw.parameters(),'lr':FLAGS.inner_lr},
-            {'params': list(model.class_net.conv_rep.parameters())+list(model.class_net.bn_rep.parameters())+
-            list(model.class_net.predict.conv_dw.parameters()),'lr':FLAGS.inner_lr/10}], lr=FLAGS.inner_lr)
+        if FLAGS.multi_inner:
+            inner_params = []
+            for params in model.class_net.parameters():
+                inner_params.append({'params': [params], 'lr': FLAGS.inner_lr})
+            inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
+        else:
+            inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=FLAGS.inner_lr)
 
     learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
 
@@ -241,7 +247,7 @@ def main(argv):
     elif FLAGS.optim == 'nesterov':
         meta_optimizer = torch.optim.SGD(meta_param_groups, lr=FLAGS.meta_lr, momentum=0.9, nesterov=True)
 
-    evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'},{'id':2,'name':'b'}], evaluate_corlocs=True)
+    evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
     iter_metrics = {'supp_class_loss': 0., 'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
@@ -249,6 +255,8 @@ def main(argv):
     t_ix = 0
     train_iter = 0
     log_count = 0
+    val_count = 0
+    log_val = False
     prev_val_iter = False
     meta_norm = 0.
     #with torch.autograd.detect_anomaly():
@@ -316,7 +324,7 @@ def main(argv):
             class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
                 num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
 
-            for b_ix in range(FLAGS.n_way*FLAGS.num_qry):
+            for b_ix in range((FLAGS.n_way+FLAGS.num_zero)*FLAGS.num_qry):
                 detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
                     None, qry_img_size, max_det_per_image=FLAGS.max_dets, soft_nms=False).cpu().numpy()
                 evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})
@@ -343,6 +351,12 @@ def main(argv):
                 val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
                 for metric_key in list(map_metrics.keys())[2:]:
                     category_metrics['val'+metric_key].append(map_metrics[metric_key])
+                val_count += 1
+
+        if (not val_iter and prev_val_iter):
+            log_val = True
+
+        prev_val_iter = val_iter
 
         if not val_iter:
             t_ix += 1
@@ -362,14 +376,14 @@ def main(argv):
                 meta_optimizer.param_groups[3]['lr'] = FLAGS.meta_lr
 
 
-        if (not val_iter and prev_val_iter):
+        if log_val:
             inner_alpha_log = anchor_net.alpha.data if FLAGS.learn_alpha else anchor_net.alpha
             log_metrics = {'iteration':train_iter,'alpha':inner_alpha_log}
             for lr_ix,lr in enumerate(learnable_lr):
                 log_metrics['inner'+str(lr_ix)] = lr.data
             
             for met_key in val_metrics.keys():
-                log_metrics[met_key] = val_metrics[met_key]/FLAGS.num_val_cats
+                log_metrics[met_key] = val_metrics[met_key]/val_count
             wandb.log(log_metrics)
             print("Validation Iteration {}:".format(train_iter),log_metrics)
 
@@ -380,6 +394,8 @@ def main(argv):
                     category_metrics[key] = []
 
             val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
+            val_count = 0
+            log_val = False
         elif not val_iter and (log_count >= FLAGS.log_freq):
             log_metrics = {'iteration':train_iter}
             for met_key in iter_metrics.keys():
@@ -396,10 +412,7 @@ def main(argv):
                     category_metrics[key] = []
 
             iter_metrics = {'supp_class_loss': 0.,'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
-            
             log_count = 0
-
-        prev_val_iter = val_iter
 
             #except Exception as e:
             #    print("!!!!!!!!!!!!!",e)
