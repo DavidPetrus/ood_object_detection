@@ -151,12 +151,12 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             z_ix = 0
             while z_ix < self.num_zero:
                 if val_iter:
-                    cat = random.sample(self.lvis_val_cats,1)
+                    cat = random.sample(self.lvis_val_cats,1)[0]
                 else:
-                    cat = random.sample(self.lvis_train_cats,1)
+                    cat = random.sample(self.lvis_train_cats,1)[0]
                 if cat in task_cats: continue
 
-                img_path = random.sample(list(self.lvis_sample[cat]),1)
+                img_path = random.sample(list(self.lvis_sample[cat]),1)[0]
                 target = {'target_size': 640}
                 img_load = Image.open(img_path).convert('RGB')
                 if not val_iter:
@@ -165,7 +165,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                     img_trans,target = self.transform(img_load,target)
 
                 query_img_batch.append(torch.from_numpy(img_trans))
-                qry_bbox_ls.append(torch.from_numpy(np.array([]).astype(np.float32)))
+                qry_bbox_ls.append(torch.from_numpy(np.zeros([0,4]).astype(np.float32)))
                 qry_cls_ls.append(torch.from_numpy(np.array([]).astype(np.int64)))
 
                 z_ix += 1

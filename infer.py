@@ -55,6 +55,8 @@ flags.DEFINE_float('dropout',0.,'')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
+flags.DEFINE_bool('freeze_fpn_bn',False,'')
+flags.DEFINE_bool('freeze_box_bn',False,'')
 flags.DEFINE_bool('train_bb',False,'')
 flags.DEFINE_bool('train_fpn',True,'')
 flags.DEFINE_bool('fpn',True,'')
@@ -213,22 +215,32 @@ def main(argv):
 
     if not FLAGS.train_mode:
         model.eval()
-    elif FLAGS.freeze_bb_bn:    
-        model.backbone.apply(set_bn_eval)
+    else:
+        if FLAGS.freeze_bb_bn:    
+            model.backbone.apply(set_bn_eval)
+        if FLAGS.freeze_fpn_bn:
+            model.fpn.apply(set_bn_eval)
+        if FLAGS.freeze_box_bn:
+            model.box_net.apply(set_bn_eval)
 
     anchor_net.to('cuda')
     if FLAGS.only_final:
         inner_optimizer = torch.optim.SGD([{'params': model.class_net.predict.conv_pw.parameters()}], lr=FLAGS.inner_lr)
     else:
         if FLAGS.multi_inner:
-            inner_params = []
-            for params in model.class_net.parameters():
-                inner_params.append({'params': [params], 'lr': FLAGS.inner_lr})
+            inner_params = [{'params': model.class_net.predict.conv_dw.parameters(), 'lr': FLAGS.inner_lr},
+                {'params': model.class_net.predict.conv_pw.parameters(), 'lr': FLAGS.inner_lr}]
+            for conv in model.class_net.conv_rep:
+                inner_params.append({'params': conv.conv_dw.parameters(), 'lr': FLAGS.inner_lr})
+                inner_params.append({'params': conv.conv_pw.parameters(), 'lr': FLAGS.inner_lr})
+
+            inner_params.append({'params': model.class_net.bn_rep.parameters(), 'lr':FLAGS.inner_lr})
             inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
         else:
             inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=FLAGS.inner_lr)
 
     learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
+    print(len(learnable_lr))
 
     if FLAGS.learn_inner:
         meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
@@ -281,12 +293,21 @@ def main(argv):
             model.apply(set_bn_train)
             if FLAGS.freeze_bb_bn:
                 model.backbone.apply(set_bn_eval)
+            if FLAGS.freeze_fpn_bn:
+                model.fpn.apply(set_bn_eval)
+            if FLAGS.freeze_box_bn:
+                model.box_net.apply(set_bn_eval)
+
             for lr in learnable_lr:
                 lr.requires_grad = False
         elif prev_val_iter and not val_iter:
             model.train()
             if FLAGS.freeze_bb_bn:
                 model.backbone.apply(set_bn_eval)
+            if FLAGS.freeze_fpn_bn:
+                model.fpn.apply(set_bn_eval)
+            if FLAGS.freeze_box_bn:
+                model.box_net.apply(set_bn_eval)
 
             if FLAGS.learn_inner:
                 for lr in learnable_lr:
@@ -324,7 +345,7 @@ def main(argv):
             class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
                 num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
 
-            for b_ix in range((FLAGS.n_way+FLAGS.num_zero)*FLAGS.num_qry):
+            for b_ix in range(FLAGS.n_way*(FLAGS.num_zero_images+FLAGS.num_qry)):
                 detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
                     None, qry_img_size, max_det_per_image=FLAGS.max_dets, soft_nms=False).cpu().numpy()
                 evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})

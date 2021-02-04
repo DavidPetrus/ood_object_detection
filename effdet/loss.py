@@ -71,18 +71,22 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
 
     pred_prob = logits.sigmoid()
     targets = targets.to(logits.dtype)
-    onem_targets = 1. - targets
-    p_t = (targets * pred_prob) + (onem_targets * (1. - pred_prob))
-    alpha_factor = targets * alpha + onem_targets * (1. - alpha)
-    #modulating_factor = torch.pow(1. - p_t, gamma)
+    if not alpha is None:
+        onem_targets = 1. - targets
+        #p_t = (targets * pred_prob) + (onem_targets * (1. - pred_prob))
+        alpha_factor = targets * alpha + onem_targets * (1. - alpha)
+        #modulating_factor = torch.pow(1. - p_t, gamma)
 
     # apply label smoothing for cross_entropy for each entry.
     if label_smoothing > 0.:
         targets = targets * (1. - label_smoothing) + .5 * label_smoothing
     ce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
 
-    # compute the final loss and return
-    return (1 / normalizer) * alpha_factor * ce
+    if not alpha is None:
+        # compute the final loss and return
+        return (1 / normalizer) * alpha_factor * ce
+    else:
+        return ce
 
 
 def huber_loss(
@@ -324,5 +328,5 @@ class SupportLoss(nn.Module):
 
         return l_fn(
             cls_outputs, cls_targets, num_positives,
-            num_classes=self.num_classes, alpha=alpha, gamma=self.gamma,
+            num_classes=self.num_classes, alpha=None, gamma=self.gamma,
             label_smoothing=self.label_smoothing, legacy_focal=self.legacy_focal)
