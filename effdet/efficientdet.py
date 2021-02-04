@@ -578,16 +578,23 @@ class AnchorNet(nn.Module):
             self.alpha = FLAGS.inner_alpha
 
         num_anchors = len(config.aspect_ratios) * config.num_scales
-        anchor_kwargs = dict(
-            in_channels=config.fpn_channels, out_channels=48, kernel_size=3,
+        anchor_kwargs1 = dict(
+            in_channels=config.fpn_channels, out_channels=88, kernel_size=3,
+            padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
+        anchor_kwargs2 = dict(
+            in_channels=88, out_channels=88, kernel_size=3,
             padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
 
-        self.anchor_layer = SeparableConv2d(**anchor_kwargs)
-        self.norm_layer = nn.BatchNorm2d(48,**config.norm_kwargs)
+        self.anchor_layer1 = SeparableConv2d(**anchor_kwargs1)
+        self.norm_layer1 = nn.BatchNorm2d(88,**config.norm_kwargs)
+        self.anchor_layer2 = SeparableConv2d(**anchor_kwargs)
+        self.norm_layer2 = nn.BatchNorm2d(88,**config.norm_kwargs)
+        
+
         self.act = Swish(inplace=True)
 
         anchor_out_kwargs = dict(
-            in_channels=48, out_channels=9, kernel_size=3,
+            in_channels=88, out_channels=9, kernel_size=3,
             padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
         self.anchor_out = SeparableConv2d(**anchor_out_kwargs)
 
@@ -599,7 +606,8 @@ class AnchorNet(nn.Module):
         for level in range(len(x)):
             x_level = x[level]
             anch_l1 = self.act(self.norm_layer(self.anchor_layer(x_level)))
-            outputs.append(self.anchor_out(anch_l1).sigmoid())
+            anch_l2 = self.act(self.norm_layer(self.anchor_layer(anch_l1)))
+            outputs.append(self.anchor_out(anch_l2).sigmoid())
         return outputs
 
 

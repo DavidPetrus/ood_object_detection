@@ -69,17 +69,22 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
     # compute focal loss multipliers before label smoothing, such that it will not blow up the loss.
     #print(logits.max())
 
-    pred_prob = logits.sigmoid()
+    
     targets = targets.to(logits.dtype)
     if not alpha is None:
+        pred_prob = logits.sigmoid()
         onem_targets = 1. - targets
         #p_t = (targets * pred_prob) + (onem_targets * (1. - pred_prob))
         alpha_factor = targets * alpha + onem_targets * (1. - alpha)
         #modulating_factor = torch.pow(1. - p_t, gamma)
+    #else:
+    #    targets = targets.detach()
 
     # apply label smoothing for cross_entropy for each entry.
     if label_smoothing > 0.:
         targets = targets * (1. - label_smoothing) + .5 * label_smoothing
+
+
     ce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
 
     if not alpha is None:

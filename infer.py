@@ -70,7 +70,7 @@ flags.DEFINE_float('bbox_coeff',5.,'')
 flags.DEFINE_float('inner_alpha',0.15,'')
 flags.DEFINE_float('alpha',0.25,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
-flags.DEFINE_bool('at_start',False,'')
+flags.DEFINE_bool('at_start',True,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
 flags.DEFINE_integer('max_dets',30,'')
 flags.DEFINE_bool('learn_inner',True,'')
@@ -241,16 +241,11 @@ def main(argv):
 
     learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
     print(len(learnable_lr))
+    meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},{'params': anchor_net.parameters(),'lr':0.},
+        {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
+        {'params':learnable_lr,'lr':0.}]
 
-    if FLAGS.learn_inner:
-        meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
-            {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
-            {'params': anchor_net.parameters(),'lr':0.},{'params':learnable_lr,'lr':0.}]
-    else:
-        meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
-            {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
-            {'params': anchor_net.parameters(),'lr':0.},{'params':learnable_lr,'lr':0.}]
-        
+    if not FLAGS.learn_inner:        
         for lr in learnable_lr:
             lr.requires_grad = False
 
@@ -391,8 +386,10 @@ def main(argv):
             meta_optimizer.step()
             train_iter += 1
 
-            if 40 < train_iter < 42:
+            if 10 < train_iter < 12:
                 meta_optimizer.param_groups[1]['lr'] = FLAGS.meta_lr
+
+            if 40 < train_iter < 42:
                 meta_optimizer.param_groups[2]['lr'] = FLAGS.meta_lr
                 meta_optimizer.param_groups[3]['lr'] = FLAGS.meta_lr
 
