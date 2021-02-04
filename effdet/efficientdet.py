@@ -587,7 +587,7 @@ class AnchorNet(nn.Module):
 
         self.anchor_layer1 = SeparableConv2d(**anchor_kwargs1)
         self.norm_layer1 = nn.BatchNorm2d(88,**config.norm_kwargs)
-        self.anchor_layer2 = SeparableConv2d(**anchor_kwargs)
+        self.anchor_layer2 = SeparableConv2d(**anchor_kwargs2)
         self.norm_layer2 = nn.BatchNorm2d(88,**config.norm_kwargs)
         
 
@@ -605,8 +605,8 @@ class AnchorNet(nn.Module):
         outputs = []
         for level in range(len(x)):
             x_level = x[level]
-            anch_l1 = self.act(self.norm_layer(self.anchor_layer(x_level)))
-            anch_l2 = self.act(self.norm_layer(self.anchor_layer(anch_l1)))
+            anch_l1 = self.act(self.norm_layer1(self.anchor_layer1(x_level)))
+            anch_l2 = self.act(self.norm_layer2(self.anchor_layer2(anch_l1)))
             outputs.append(self.anchor_out(anch_l2).sigmoid())
         return outputs
 

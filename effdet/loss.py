@@ -77,6 +77,7 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
         #p_t = (targets * pred_prob) + (onem_targets * (1. - pred_prob))
         alpha_factor = targets * alpha + onem_targets * (1. - alpha)
         #modulating_factor = torch.pow(1. - p_t, gamma)
+        
     #else:
     #    targets = targets.detach()
 
@@ -333,5 +334,5 @@ class SupportLoss(nn.Module):
 
         return l_fn(
             cls_outputs, cls_targets, num_positives,
-            num_classes=self.num_classes, alpha=None, gamma=self.gamma,
+            num_classes=self.num_classes, alpha=alpha, gamma=self.gamma,
             label_smoothing=self.label_smoothing, legacy_focal=self.legacy_focal)
