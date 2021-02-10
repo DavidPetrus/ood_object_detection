@@ -46,7 +46,7 @@ def focal_loss_legacy(logits, targets, alpha: float, gamma: float, normalizer):
     weighted_loss = torch.where(positive_label_mask, alpha * loss, (1.0 - alpha) * loss)
     return weighted_loss / normalizer
 
-def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, label_smoothing: float = 0.01, loss_type='ce'):
+def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, label_smoothing: float = 0.01, loss_func):
     """Compute the focal loss between `logits` and the golden `target` values.
 
     'New' is not the best descriptor, but this focal loss impl matches recent versions of
@@ -85,10 +85,7 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
     if label_smoothing > 0.:
         targets = targets * (1. - label_smoothing) + .5 * label_smoothing
 
-    if loss_type == 'ce':
-        loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
-    elif loss_type == 'mse':
-        loss = F.mse_loss(logits, targets, reduction='none')
+    loss = loss_func(logits, targets, reduction='none')
 
     if not alpha is None:
         # compute the final loss and return
@@ -231,6 +228,11 @@ def loss_fn(
     num_positives_sum = (num_positives.sum() + 1.0)
     levels = len(cls_outputs)
 
+    if loss_type == 'ce':
+        loss_func = F.binary_cross_entropy_with_logits
+    elif loss_type == 'mse':
+        loss_func = F.mse_loss
+
     cls_losses = []
     box_losses = []
     for l in range(levels):
@@ -250,7 +252,7 @@ def loss_fn(
         else:
             cls_loss = new_focal_loss(
                 cls_outputs_at_level, cls_targets_at_level_oh,
-                alpha=alpha, gamma=gamma, normalizer=num_positives_sum, label_smoothing=label_smoothing, loss_type=loss_type)
+                alpha=alpha, gamma=gamma, normalizer=num_positives_sum, label_smoothing=label_smoothing, loss_func=loss_func)
         cls_loss = cls_loss.view(bs, height, width, -1, num_classes)
         cls_loss = cls_loss * (cls_targets_at_level != -2).unsqueeze(-1)
         cls_losses.append(cls_loss.sum())   # FIXME reference code added a clamp here at some point ...clamp(0, 2))
