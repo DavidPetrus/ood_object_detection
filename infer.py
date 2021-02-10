@@ -165,6 +165,11 @@ def main(argv):
         )
 
 
+    class MyDataParallel(torch.nn.DataParallel):
+        def __getattr__(self, name):
+            return getattr(self.module, name)
+
+
     config = OmegaConf.create(config)
 
     h = default_detection_model_configs()
@@ -207,7 +212,7 @@ def main(argv):
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
     imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
-    model = torch.nn.DataParallel(model)
+    model = MyDataParallel(model)
     model.to('cuda')
 
     def set_bn_train(module):
