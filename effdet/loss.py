@@ -85,7 +85,8 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
     if label_smoothing > 0.:
         targets = targets * (1. - label_smoothing) + .5 * label_smoothing
 
-    loss = loss_func(logits, targets, reduction='none')
+    #loss = loss_func(logits, targets, reduction='none')
+    loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
 
     if not alpha is None:
         # compute the final loss and return
