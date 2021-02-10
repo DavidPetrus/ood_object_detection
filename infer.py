@@ -57,7 +57,7 @@ flags.DEFINE_string('optim','adam','')
 flags.DEFIEN_bool('detach_anch',False,'')
 flags.DEFINE_integer('num_anch_layers',2,'')
 flags.DEFINE_bool('supp_alpha',True,'')
-flags.DEFINE_string('inner_loss','ce','')
+flags.DEFINE_string('loss_type','ce','')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
 flags.DEFINE_bool('freeze_fpn_bn',True,'')
 flags.DEFINE_bool('freeze_box_bn',True,'')
@@ -200,7 +200,7 @@ def main(argv):
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
 
     loss_fn = DetectionLoss(model_config)
-    support_loss_fn = SupportLoss(model_config)
+    support_loss_fn = SupportLoss(model_config, loss_type=FLAGS.loss_type)
 
 
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
