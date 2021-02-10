@@ -55,8 +55,8 @@ flags.DEFINE_float('dropout',0.,'')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
-flags.DEFINE_bool('freeze_fpn_bn',False,'')
-flags.DEFINE_bool('freeze_box_bn',False,'')
+flags.DEFINE_bool('freeze_fpn_bn',True,'')
+flags.DEFINE_bool('freeze_box_bn',True,'')
 flags.DEFINE_bool('train_bb',False,'')
 flags.DEFINE_bool('train_fpn',True,'')
 flags.DEFINE_bool('fpn',True,'')
@@ -203,6 +203,7 @@ def main(argv):
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
     imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
+    model = torch.nn.DataParallel(model)
     model.to('cuda')
 
     def set_bn_train(module):
@@ -241,7 +242,8 @@ def main(argv):
 
     learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
     print(len(learnable_lr))
-    meta_param_groups = [{'params': model.class_net.parameters(),'lr':0.},{'params': anchor_net.parameters(),'lr':FLAGS.meta_lr},
+    meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
+        {'params': anchor_net.parameters(),'lr':0.},
         {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
         {'params':learnable_lr,'lr':0.}]
 
@@ -276,9 +278,9 @@ def main(argv):
         supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
 
         supp_cls_labs = supp_cls_labs.to('cuda')
-        qry_cls_anchors = [cls_anchor.to('cuda:0') for cls_anchor in qry_labs['cls_anchor']]
-        qry_bbox_anchors = [bbox_anchor.to('cuda:0') for bbox_anchor in qry_labs['bbox_anchor']]
-        qry_num_positives = qry_labs['num_positives'].to('cuda:0')
+        qry_cls_anchors = [cls_anchor.to('cuda') for cls_anchor in qry_labs['cls_anchor']]
+        qry_bbox_anchors = [bbox_anchor.to('cuda') for bbox_anchor in qry_labs['bbox_anchor']]
+        qry_num_positives = qry_labs['num_positives'].to('cuda')
         
         supp_imgs = (supp_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
         qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
@@ -386,11 +388,8 @@ def main(argv):
             meta_optimizer.step()
             train_iter += 1
 
-            if 15 < train_iter < 17:
-                meta_optimizer.param_groups[0]['lr'] = FLAGS.meta_lr
+            if 40 < train_iter < 42:
                 meta_optimizer.param_groups[1]['lr'] = FLAGS.meta_lr
-
-            if 60 < train_iter < 62:
                 meta_optimizer.param_groups[2]['lr'] = FLAGS.meta_lr
                 meta_optimizer.param_groups[3]['lr'] = FLAGS.meta_lr
 
