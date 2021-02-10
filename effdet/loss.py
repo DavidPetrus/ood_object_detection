@@ -85,8 +85,8 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
     if label_smoothing > 0.:
         targets = targets * (1. - label_smoothing) + .5 * label_smoothing
 
-    #loss = loss_func(logits, targets, reduction='none')
-    loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+    loss = loss_func(logits, targets, reduction='none')
+    #loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
 
     if not alpha is None:
         # compute the final loss and return
@@ -266,7 +266,7 @@ def loss_fn(
     return total_loss, cls_loss, box_loss
 
 
-loss_jit = torch.jit.script(loss_fn)
+#loss_jit = torch.jit.script(loss_fn)
 
 
 class DetectionLoss(nn.Module):
@@ -294,10 +294,10 @@ class DetectionLoss(nn.Module):
             num_positives: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
         l_fn = loss_fn
-        if not torch.jit.is_scripting() and self.use_jit:
-            # This branch only active if parent / bench itself isn't being scripted
-            # NOTE: I haven't figured out what to do here wrt to tracing, is it an issue?
-            l_fn = loss_jit
+        #if not torch.jit.is_scripting() and self.use_jit:
+        #    # This branch only active if parent / bench itself isn't being scripted
+        #    # NOTE: I haven't figured out what to do here wrt to tracing, is it an issue?
+        #    l_fn = loss_jit
 
         return l_fn(
             cls_outputs, box_outputs, cls_targets, box_targets, num_positives,
