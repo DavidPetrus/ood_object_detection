@@ -572,15 +572,18 @@ class AnchorNet(nn.Module):
         super(AnchorNet, self).__init__()
         self.config = config
         self.num_levels = config.num_levels
-        if FLAGS.learn_alpha:
-            self.alpha = nn.Parameter(torch.tensor(FLAGS.inner_alpha))
+        if not FLAGS.supp_alpha:
+            self.alpha = None
         else:
-            self.alpha = FLAGS.inner_alpha
+            if FLAGS.learn_alpha:
+                self.alpha = nn.Parameter(torch.tensor(FLAGS.inner_alpha))
+            else:
+                self.alpha = FLAGS.inner_alpha
 
         norm_layer = config.norm_layer or nn.BatchNorm2d
         if config.norm_kwargs:
             norm_layer = partial(norm_layer, **config.norm_kwargs)
-            
+
         num_channels = 88
 
         if FLAGS.num_anch_layers == 1:
@@ -617,7 +620,10 @@ class AnchorNet(nn.Module):
     def forward(self, x):
         outputs = []
         for level in range(len(x)):
-            x_level = x[level]
+            if FLAGS.detach_anch:
+                x_level = x[level].detach()
+            else:
+                x_level = x[level]
             for conv, bn in zip(self.conv_rep, self.bn_rep):
                 x_level = conv(x_level)
                 x_level = bn[level](x_level)

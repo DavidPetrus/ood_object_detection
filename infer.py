@@ -54,7 +54,10 @@ flags.DEFINE_string('model','d3','')
 flags.DEFINE_float('dropout',0.,'')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
+flags.DEFIEN_bool('detach_anch',False,'')
 flags.DEFINE_integer('num_anch_layers',2,'')
+flags.DEFINE_bool('supp_alpha',True,'')
+flags.DEFINE_string('inner_loss','ce','')
 flags.DEFINE_bool('freeze_bb_bn',True,'')
 flags.DEFINE_bool('freeze_fpn_bn',True,'')
 flags.DEFINE_bool('freeze_box_bn',True,'')
@@ -396,7 +399,10 @@ def main(argv):
 
 
         if log_val:
-            inner_alpha_log = anchor_net.alpha.data if FLAGS.learn_alpha else anchor_net.alpha
+            if not FLAGS.supp_alpha:
+                inner_alpha_log = 0.
+            else:
+                inner_alpha_log = anchor_net.alpha.data if FLAGS.learn_alpha else anchor_net.alpha
             log_metrics = {'iteration':train_iter,'alpha':inner_alpha_log}
             for lr_ix,lr in enumerate(learnable_lr):
                 log_metrics['inner'+str(lr_ix)] = lr.data

@@ -77,7 +77,7 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
         #p_t = (targets * pred_prob) + (onem_targets * (1. - pred_prob))
         alpha_factor = targets * alpha + onem_targets * (1. - alpha)
         #modulating_factor = torch.pow(1. - p_t, gamma)
-        
+
     #else:
     #    targets = targets.detach()
 
@@ -85,14 +85,16 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
     if label_smoothing > 0.:
         targets = targets * (1. - label_smoothing) + .5 * label_smoothing
 
-
-    ce = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+    if FLAGS.inner_loss == 'ce':
+        loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+    elif FLAGS.inner_loss == 'mse':
+        loss = F.mse_loss(logits, targets, reduction='none')
 
     if not alpha is None:
         # compute the final loss and return
-        return (1 / normalizer) * alpha_factor * ce
+        return (1 / normalizer) * alpha_factor * loss
     else:
-        return ce
+        return loss
 
 
 def huber_loss(
