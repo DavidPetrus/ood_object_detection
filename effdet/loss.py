@@ -200,7 +200,7 @@ def loss_fn(
         box_loss_weight: float,
         label_smoothing: float = 0.,
         legacy_focal: bool = False,
-        loss_type='ce') -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        loss_func=F.binary_cross_entropy_with_logits) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Computes total detection loss.
     Computes total detection loss including box and class loss from all levels.
     Args:
@@ -227,11 +227,6 @@ def loss_fn(
     # num_positives_sum, which would lead to inf loss during training
     num_positives_sum = (num_positives.sum() + 1.0)
     levels = len(cls_outputs)
-
-    if loss_type == 'ce':
-        loss_func = F.binary_cross_entropy_with_logits
-    elif loss_type == 'mse':
-        loss_func = F.mse_loss
 
     cls_losses = []
     box_losses = []
@@ -322,7 +317,11 @@ class SupportLoss(nn.Module):
         self.label_smoothing = config.label_smoothing
         self.legacy_focal = config.legacy_focal
         self.use_jit = config.jit_loss
-        self.loss_type = loss_type
+
+        if loss_type == 'ce':
+            self.loss_func = F.binary_cross_entropy_with_logits
+        elif loss_type == 'mse':
+            self.loss_func = F.mse_loss
 
     def forward(
             self,
@@ -340,4 +339,4 @@ class SupportLoss(nn.Module):
         return l_fn(
             cls_outputs, cls_targets, num_positives,
             num_classes=self.num_classes, alpha=alpha, gamma=self.gamma,
-            label_smoothing=self.label_smoothing, legacy_focal=self.legacy_focal, loss_type=self.loss_type)
+            label_smoothing=self.label_smoothing, legacy_focal=self.legacy_focal, loss_func=self.loss_func)
