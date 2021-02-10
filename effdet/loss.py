@@ -46,7 +46,7 @@ def focal_loss_legacy(logits, targets, alpha: float, gamma: float, normalizer):
     weighted_loss = torch.where(positive_label_mask, alpha * loss, (1.0 - alpha) * loss)
     return weighted_loss / normalizer
 
-def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, label_smoothing: float = 0.01, loss_func):
+def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, label_smoothing: float = 0.01, loss_func=F.binary_cross_entropy_with_logits):
     """Compute the focal loss between `logits` and the golden `target` values.
 
     'New' is not the best descriptor, but this focal loss impl matches recent versions of
