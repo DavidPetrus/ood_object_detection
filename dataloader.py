@@ -198,7 +198,7 @@ def load_metadata_dicts():
         base_path = "/home/ubuntu/"
         feat_dir = 'train_feats'
     else:
-        base_path = '/root/'
+        base_path = '/home-mscluster/dvanniekerk/'
         feat_dir = 'train_activ'
 
     if FLAGS.fpn:

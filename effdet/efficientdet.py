@@ -577,25 +577,38 @@ class AnchorNet(nn.Module):
         else:
             self.alpha = FLAGS.inner_alpha
 
-        num_anchors = len(config.aspect_ratios) * config.num_scales
-        anchor_kwargs1 = dict(
-            in_channels=config.fpn_channels, out_channels=88, kernel_size=3,
+        norm_layer = config.norm_layer or nn.BatchNorm2d
+        if config.norm_kwargs:
+            norm_layer = partial(norm_layer, **config.norm_kwargs)
+            
+        num_channels = 88
+
+        if FLAGS.num_anch_layers == 1:
+            anchor_out_kwargs = dict(
+            in_channels=config.fpn_channels, out_channels=9, kernel_size=3,
             padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
-        anchor_kwargs2 = dict(
-            in_channels=88, out_channels=88, kernel_size=3,
+            self.conv_rep = nn.ModuleList()
+        else:
+            anchor_out_kwargs = dict(
+            in_channels=num_channels, out_channels=9, kernel_size=3,
             padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
 
-        self.anchor_layer1 = SeparableConv2d(**anchor_kwargs1)
-        self.norm_layer1 = nn.BatchNorm2d(88,**config.norm_kwargs)
-        self.anchor_layer2 = SeparableConv2d(**anchor_kwargs2)
-        self.norm_layer2 = nn.BatchNorm2d(88,**config.norm_kwargs)
+            in_conv = dict(
+                in_channels=config.fpn_channels, out_channels=num_channels, kernel_size=3,
+                padding=config.pad_type, bias=True, act_layer=None, norm_layer=None)
+            conv_kwargs = dict(
+                in_channels=num_channels, out_channels=num_channels, kernel_size=3,
+                padding=config.pad_type, bias=config.redundant_bias, act_layer=None, norm_layer=None)
+            self.conv_rep = nn.ModuleList([SeparableConv2d(**in_conv)]+[SeparableConv2d(**conv_kwargs) for _ in range(FLAGS.num_anch_layers-2)])
         
+        self.bn_rep = nn.ModuleList()
+        for _ in range(FLAGS.num_anch_layers-1):
+            self.bn_rep.append(nn.ModuleList([
+                nn.Sequential(OrderedDict([('bn', norm_layer(num_channels))]))
+                for _ in range(self.num_levels)]))
 
         self.act = Swish(inplace=True)
 
-        anchor_out_kwargs = dict(
-            in_channels=88, out_channels=9, kernel_size=3,
-            padding=config.pad_type, bias=True, norm_layer=None, act_layer=None)
         self.anchor_out = SeparableConv2d(**anchor_out_kwargs)
 
         for n, m in self.named_modules():
@@ -605,9 +618,11 @@ class AnchorNet(nn.Module):
         outputs = []
         for level in range(len(x)):
             x_level = x[level]
-            anch_l1 = self.act(self.norm_layer1(self.anchor_layer1(x_level)))
-            anch_l2 = self.act(self.norm_layer2(self.anchor_layer2(anch_l1)))
-            outputs.append(self.anchor_out(anch_l2).sigmoid())
+            for conv, bn in zip(self.conv_rep, self.bn_rep):
+                x_level = conv(x_level)
+                x_level = bn[level](x_level)
+                x_level = self.act(x_level)
+            outputs.append(self.anchor_out(x_level).sigmoid())
         return outputs
 
 
