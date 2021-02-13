@@ -566,6 +566,87 @@ def get_feature_info(backbone):
     return feature_info
 
 
+class MetaHead(nn.Module):
+
+    def __init__(self,config,pretrain_init=None,num_channels_flag=None):
+        super(MetaHead, self).__init__()
+        self.num_layers = config.box_class_repeats
+        self.num_levels = config.num_levels
+        norm_layer = config.norm_layer or nn.BatchNorm2d
+        
+        in_channels = config.fpn_channels
+        num_channels = num_channels_flag or config.fpn_channels
+        num_anchors = len(config.aspect_ratios) * config.num_scales
+
+        '''self.conv_dw_rep = nn.ParameterList([nn.Parameter(torch.randn((in_channels,in_channels,3,3))*((1/in_channels)**0.5))] +
+            [nn.Parameter(torch.randn((num_channels,num_channels,3,3))*((1/num_channels)**0.5)) for _ in range(FLAGS.num_conv-1)])
+        self.conv_pw_rep = nn.ParameterList([nn.Parameter(torch.randn((num_channels,in_channels,1,1))*((1/in_channels)**0.5))] +
+            [nn.Parameter(torch.randn((num_channels,num_channels,1,1))*((1/num_channels)**0.5)) for _ in range(FLAGS.num_conv-1)])'''
+
+        self.conv_dw_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_dw.weight'.format(l)]) 
+            for l in range(self.num_layers)])
+        self.conv_pw_rep = nn.ParameterList(
+            [nn.ParameterDict({'w':nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.weight'.format(l)]),
+                               'b':nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.bias'.format(l)])}) 
+            for l in range(self.num_layers)])
+
+        # Build batchnorm repeats. There is a unique batchnorm per feature level for each repeat.
+
+        self.running_mu = torch.zeros(num_channels)
+        self.running_std = torch.ones(num_channels)
+        self.act = Swish(inplace=True)
+
+        #self.pred_conv = nn.ParameterDict({'dw':nn.Parameter(torch.randn((num_channels,num_channels,3,3))*((1/num_channels)**0.5)),
+        self.predict = nn.ParameterDict({
+            'dw':nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight']),
+            'pw':nn.Parameter(torch.randn((num_channels,num_anchors,1,1))*((1/num_channels)**0.5)),
+            'b':nn.Parameter(torch.full((num_anchors),-math.log((1 - 0.01) / 0.01)))})
+
+        self.bn_rep = nn.ParameterList()
+        '''for _ in range(FLAGS.num_conv):
+            self.bn_rep.append(nn.ParameterList([nn.ParameterDict({'w':nn.Parameter(torch.ones(num_channels)),
+                'b':nn.Parameter(torch.zeros(num_channels))})
+                for _ in range(self.num_levels)]))'''
+
+        for rep in range(self.num_layers):
+            self.bn_rep.append(nn.ParameterList([nn.ParameterDict({
+                'w':nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.weight'.format(rep,lev)]),
+                'b':nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.bias'.format(rep,lev)])})
+                for lev in range(self.num_levels)]))
+
+
+    def forward(self,x,fast_weights=None):
+        if fast_weights is None:
+            conv_dw_rep, conv_pw_rep, bn_rep, predict = self.conv_dw_rep, self.conv_pw_rep, self.bn_rep, self.predict
+        else:
+            conv_dw_rep = [fast_weights[0],fast_weights[1],fast_weights[2],fast_weights[3]]
+            conv_pw_rep = [{'w':fast_weights[5],'b':fast_weights[4]},{'w':fast_weights[7],'b':fast_weights[6]},
+                           {'w':fast_weights[9],'b':fast_weights[8]},{'w':fast_weights[11],'b':fast_weights[10]}]
+            predict = ['dw': fast_weights[13], 'pw': fast_weights[14], 'b': fast_weights[12]]
+            bn = [[{'w':fast_weights[16],'b':fast_weights[15]},{'w':fast_weights[18],'b':fast_weights[17]},
+                   {'w':fast_weights[20],'b':fast_weights[19]},{'w':fast_weights[22],'b':fast_weights[21]},{'w':fast_weights[24],'b':fast_weights[23]}],
+                   [{'w':fast_weights[26],'b':fast_weights[25]},{'w':fast_weights[28],'b':fast_weights[27]},
+                   {'w':fast_weights[30],'b':fast_weights[29]},{'w':fast_weights[32],'b':fast_weights[31]},{'w':fast_weights[34],'b':fast_weights[33]}],
+                   [{'w':fast_weights[36],'b':fast_weights[35]},{'w':fast_weights[38],'b':fast_weights[37]},
+                   {'w':fast_weights[40],'b':fast_weights[39]},{'w':fast_weights[42],'b':fast_weights[41]},{'w':fast_weights[44],'b':fast_weights[43]}],
+                   [{'w':fast_weights[46],'b':fast_weights[45]},{'w':fast_weights[48],'b':fast_weights[47]},
+                   {'w':fast_weights[50],'b':fast_weights[49]},{'w':fast_weights[52],'b':fast_weights[51]},{'w':fast_weights[54],'b':fast_weights[53]}]]
+            
+
+        outputs = []
+        for level in range(len(x)):
+            x_level = x[level]
+            for conv_dw,conv_pw,bn = in zip(conv_dw_rep, conv_pw_rep, bn_rep):
+                x_level = F.conv2d(x_level, conv_dw, groups=conv_dw.shape[0])
+                x_level = F.conv2d(x_level, conv_pw['w'], conv_pw['b'])
+                x_level = F.batch_norm(x_level,self.running_mu,self.running_std,bn[level]['w'],bn[level]['b'],training=True)
+                x_level = self.act(x_level)
+            x_level = F.conv2d(x_level, predict['dw'], groups=predict['dw'].shape[0])
+            x_level = F.conv2d(x_level, predict['pw'], bias=predict['b'])
+            outputs.append(x_level)
+        return outputs
+
+
 class AnchorNet(nn.Module):
 
     def __init__(self, config, at_start=True):
@@ -696,7 +777,7 @@ class EfficientDet(nn.Module):
         self.class_net.toggle_bn_level_first()
         self.box_net.toggle_bn_level_first()
 
-    def forward(self, x, mode='full_net'):
+    def forward(self, x, fast_weights=None, mode='full_net'):
         if mode=='supp_cls':
             if FLAGS.at_start:
                 x_class = self.class_net(x,level_offset=FLAGS.supp_level_offset)
@@ -716,7 +797,7 @@ class EfficientDet(nn.Module):
             x_box = self.box_net(activs)
             return activs, x_box
         elif mode=='qry_cls':
-            x_class = self.class_net(x)
+            x_class = self.class_net(x,fast_weights=fast_weights)
             return x_class
         elif mode=='full_net':
             x = self.backbone(x)

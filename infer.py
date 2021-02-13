@@ -6,7 +6,7 @@ from omegaconf import OmegaConf
 import datetime
 
 from timm.models import load_checkpoint
-from effdet.efficientdet import EfficientDet, AnchorNet
+from effdet.efficientdet import EfficientDet, AnchorNet, MetaHead
 from effdet.helpers import load_pretrained
 from effdet.config.model_config import default_detection_model_configs
 from effdet.distributed import all_gather_container
@@ -55,6 +55,7 @@ flags.DEFINE_float('dropout',0.,'')
 flags.DEFINE_string('bb','b0','')
 flags.DEFINE_string('optim','adam','')
 flags.DEFINE_bool('detach_anch',False,'')
+flags.DEFINE_integer('num_conv',3,'')
 flags.DEFINE_integer('num_anch_layers',2,'')
 flags.DEFINE_bool('supp_alpha',True,'')
 flags.DEFINE_string('loss_type','ce','')
@@ -196,7 +197,14 @@ def main(argv):
         load_state_dict = state_dict
     model.load_state_dict(load_state_dict, strict=True)
     #load_checkpoint(model,"efficientdet_d0-f3276ba8.pth")
-    model.reset_head(num_classes=FLAGS.n_way)
+    #model.reset_head(num_classes=FLAGS.n_way)
+    class_net_init_params = {}
+    for n,v in model.named_parameters():
+        if 'class_net' in n:
+            class_net_init_params[n] = v.data.detach().clone()
+
+    print(class_net_init_params.keys())
+    model.class_net = MetaHead(model.config,pretrain_init=class_net_init_params)
 
     model_config = model.config
     print(model_config['num_classes'])
@@ -241,21 +249,25 @@ def main(argv):
 
     anchor_net.to('cuda')
     if FLAGS.only_final:
-        inner_optimizer = torch.optim.SGD([{'params': model.class_net.predict.conv_pw.parameters()}], lr=FLAGS.inner_lr)
+        inner_params = [{'params': model.class_net.predict.conv_pw.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
+        #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
     else:
         if FLAGS.multi_inner:
-            inner_params = [{'params': model.class_net.predict.conv_dw.parameters(), 'lr': FLAGS.inner_lr},
-                {'params': model.class_net.predict.conv_pw.parameters(), 'lr': FLAGS.inner_lr}]
-            for conv in model.class_net.conv_rep:
-                inner_params.append({'params': conv.conv_dw.parameters(), 'lr': FLAGS.inner_lr})
-                inner_params.append({'params': conv.conv_pw.parameters(), 'lr': FLAGS.inner_lr})
+            inner_params = model.class_net.parameters()
+            learnable_lr = []
+            for par in model.class_net.parameters()[:16]:
+                learnable_lr.append(nn.Parameter(torch.tensor(FLAGS.inner_lr)))
 
-            inner_params.append({'params': model.class_net.bn_rep.parameters(), 'lr':FLAGS.inner_lr})
-            inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
         else:
-            inner_optimizer = torch.optim.SGD([{'params': model.class_net.parameters()}], lr=FLAGS.inner_lr)
+            inner_params = [{'params': model.class_net.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
+            #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
 
-    learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
+    #learnable_lr = [par['lr'] for par in inner_params]
+    #inner_pars = []
+    #for par in inner_params:
+    #    inner_pars.extend(par['params'])
+
+    #learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
     print(len(learnable_lr))
     meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
         {'params': anchor_net.parameters(),'lr':0.},
@@ -334,7 +346,7 @@ def main(argv):
         with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
             qry_activs, qry_box_out = model(feats,mode='not_cls')
 
-        with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter,
+        '''with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter,
             device='cuda', override={'lr': learnable_lr}) as (fast_model, inner_opt):
             for inner_ix in range(FLAGS.steps):
                 class_out, anchor_inps = fast_model(supp_activs, mode='supp_cls')
@@ -351,7 +363,28 @@ def main(argv):
                 qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
             if not val_iter:
-                qry_loss.backward()
+                qry_loss.backward()'''
+
+        class_out, anchor_inps = model(supp_activs, mode='supp_cls')
+        target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
+        supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
+        supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
+
+        inner_grad = torch.autograd.grad(supp_class_loss, inner_params, only_inputs=True, create_graph=True)
+        fast_weights = list(map(
+            lambda p: p[1] - learnable_lr[min(p[2],len(learnable_lr)-1)]*p[0] if not p[0] is None else p[1], 
+            zip(inner_grad, inner_params, range(len(inner_params)))))
+
+        print(len(fast_weights))
+        print(inner_params)
+
+        with torch.set_grad_enabled(not val_iter):
+            qry_class_out = model(qry_activs, fast_weights=fast_weights, mode='qry_cls')
+            qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
+
+        if not val_iter:
+            qry_loss.backward()
+
 
         with torch.no_grad():
             class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
