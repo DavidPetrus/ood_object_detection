@@ -379,7 +379,7 @@ def main(argv):
         if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
         supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
 
-        inner_grad = torch.autograd.grad(supp_class_loss, inner_params, only_inputs=True, create_graph=True)
+        inner_grad = torch.autograd.grad(supp_class_loss, inner_params, allow_unused=True, only_inputs=True, create_graph=True)
         fast_weights = list(map(
             lambda p: p[1] - learnable_lr[min(p[2],len(learnable_lr)-1)]*p[0] if not p[0] is None else p[1], 
             zip(inner_grad, inner_params, range(len(inner_params)))))
