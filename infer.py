@@ -198,6 +198,7 @@ def main(argv):
                 load_state_dict[k] = v
     else:
         load_state_dict = state_dict
+
     model.load_state_dict(load_state_dict, strict=True)
     #load_checkpoint(model,"efficientdet_d0-f3276ba8.pth")
     #model.reset_head(num_classes=FLAGS.n_way)
@@ -274,7 +275,7 @@ def main(argv):
     #learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
     print(len(learnable_lr))
     meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
-        {'params': anchor_net.parameters(),'lr':0.},
+        {'params': anchor_net.parameters(),'lr':FLAGS.meta_lr},
         {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
         {'params':learnable_lr,'lr':0.}]
 
@@ -379,13 +380,12 @@ def main(argv):
         if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
         supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
 
-        inner_grad = torch.autograd.grad(supp_class_loss, inner_params, allow_unused=True, only_inputs=True, create_graph=True)
-        fast_weights = list(map(
-            lambda p: p[1] - learnable_lr[min(p[2],len(learnable_lr)-1)]*p[0] if not p[0] is None else p[1], 
-            zip(inner_grad, inner_params, range(len(inner_params)))))
+        inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
 
-        print(len(fast_weights))
-        print(inner_params)
+        fast_weights = []
+        for p_ix,par in enumerate(model.class_net.parameters()):
+            update_par = par - learnable_lr[min(p_ix,len(learnable_lr)-1)]*inner_grad[p_ix] if not inner_grad[p_ix] is None else par
+            fast_weights.append(update_par)
 
         with torch.set_grad_enabled(not val_iter):
             qry_class_out = model(qry_activs, fast_weights=fast_weights, mode='qry_cls')

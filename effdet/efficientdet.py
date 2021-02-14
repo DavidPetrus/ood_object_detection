@@ -624,8 +624,8 @@ class MetaHead(nn.Module):
             conv_pw_rep = fast_weights[self.num_layers:2*self.num_layers]
             conv_pb_rep = fast_weights[2*self.num_layers:3*self.num_layers]
             predict = fast_weights[3*self.num_layers:3*self.num_layers+3]
-            bn_rep_w = fast_weights[3*self.num_layers+3::2]
-            bn_rep_b = fast_weights[3*self.num_layers+4::2]
+            bn_rep_w = fast_weights[3*self.num_layers+3:3*self.num_layers+3 + self.num_layers*self.num_levels]
+            bn_rep_b = fast_weights[3*self.num_layers+3 + self.num_layers*self.num_levels:]
             
             
         outputs = []
