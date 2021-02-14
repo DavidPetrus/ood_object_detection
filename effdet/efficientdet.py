@@ -617,8 +617,8 @@ class MetaHead(nn.Module):
 
     def forward(self,x,fast_weights=None,level_offset=0):
         if fast_weights is None:
-            conv_dw_rep, conv_pw_rep, conv_pb_rep, bn_rep_w, bn_rep_b, predict = 
-                self.conv_dw_rep, self.conv_pw_rep, self.conv_pb_rep, self.bn_rep_w, self.bn_rep_b, self.predict
+            conv_dw_rep, conv_pw_rep, conv_pb_rep = self.conv_dw_rep, self.conv_pw_rep, self.conv_pb_rep
+            bn_rep_w, bn_rep_b, predict = self.bn_rep_w, self.bn_rep_b, self.predict
         else:
             conv_dw_rep = fast_weights[:self.num_layers]
             conv_pw_rep = fast_weights[self.num_layers:2*self.num_layers]
