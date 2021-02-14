@@ -590,6 +590,7 @@ class MetaHead(nn.Module):
         self.conv_pb_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.bias'.format(l)])
             for l in range(self.num_layers)])
 
+        # Build batchnorm repeats. There is a unique batchnorm per feature level for each repeat.
         self.running_mu = torch.zeros(num_channels)
         self.running_std = torch.ones(num_channels)
         self.act = Swish(inplace=True)
