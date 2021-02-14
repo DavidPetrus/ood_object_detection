@@ -585,9 +585,9 @@ class MetaHead(nn.Module):
 
         self.conv_dw_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_dw.weight'.format(l)]) 
             for l in range(self.num_layers)])
-        self.conv_pw_rep = nn.ParameterList(
-            [nn.ParameterDict({'w':nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.weight'.format(l)]),
-                               'b':nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.bias'.format(l)])}) 
+        self.conv_pw_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.weight'.format(l)])
+            for l in range(self.num_layers)])
+        self.conv_pb_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.bias'.format(l)])
             for l in range(self.num_layers)])
 
         # Build batchnorm repeats. There is a unique batchnorm per feature level for each repeat.
@@ -597,52 +597,50 @@ class MetaHead(nn.Module):
         self.act = Swish(inplace=True)
 
         #self.pred_conv = nn.ParameterDict({'dw':nn.Parameter(torch.randn((num_channels,num_channels,3,3))*((1/num_channels)**0.5)),
-        self.predict = nn.ParameterDict({
-            'dw':nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight']),
-            'pw':nn.Parameter(torch.randn((num_channels,num_anchors,1,1))*((1/num_channels)**0.5)),
-            'b':nn.Parameter(torch.full((num_anchors),-math.log((1 - 0.01) / 0.01)))})
 
-        self.bn_rep = nn.ParameterList()
+        self.predict = nn.ParameterList([
+            nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight']),
+            nn.Parameter(torch.randn((num_channels,num_anchors,1,1))*((1/num_channels)**0.5)),
+            nn.Parameter(torch.full((num_anchors),-math.log((1 - 0.01) / 0.01)))])
+
+
+        self.bn_rep_w = nn.ParameterList()
+        self.bn_rep_b = nn.ParameterList()
         '''for _ in range(FLAGS.num_conv):
             self.bn_rep.append(nn.ParameterList([nn.ParameterDict({'w':nn.Parameter(torch.ones(num_channels)),
                 'b':nn.Parameter(torch.zeros(num_channels))})
                 for _ in range(self.num_levels)]))'''
 
-        for rep in range(self.num_layers):
-            self.bn_rep.append(nn.ParameterList([nn.ParameterDict({
-                'w':nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.weight'.format(rep,lev)]),
-                'b':nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.bias'.format(rep,lev)])})
-                for lev in range(self.num_levels)]))
+        for lev in range(self.num_levels):
+            for rep in range(self.num_layers):
+                self.bn_rep_w.append(nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.weight'.format(rep,lev)]))
+                self.bn_rep_b.append(nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.bias'.format(rep,lev)]))
 
 
     def forward(self,x,fast_weights=None):
         if fast_weights is None:
-            conv_dw_rep, conv_pw_rep, bn_rep, predict = self.conv_dw_rep, self.conv_pw_rep, self.bn_rep, self.predict
+            conv_dw_rep, conv_pw_rep, bn_rep_w, bn_rep_b, predict = self.conv_dw_rep, self.conv_pw_rep, self.bn_rep_w, self.bn_rep_b, self.predict
         else:
-            conv_dw_rep = [fast_weights[0],fast_weights[1],fast_weights[2],fast_weights[3]]
-            conv_pw_rep = [{'w':fast_weights[5],'b':fast_weights[4]},{'w':fast_weights[7],'b':fast_weights[6]},
-                           {'w':fast_weights[9],'b':fast_weights[8]},{'w':fast_weights[11],'b':fast_weights[10]}]
-            predict = ['dw': fast_weights[13], 'pw': fast_weights[14], 'b': fast_weights[12]]
-            bn = [[{'w':fast_weights[16],'b':fast_weights[15]},{'w':fast_weights[18],'b':fast_weights[17]},
-                   {'w':fast_weights[20],'b':fast_weights[19]},{'w':fast_weights[22],'b':fast_weights[21]},{'w':fast_weights[24],'b':fast_weights[23]}],
-                   [{'w':fast_weights[26],'b':fast_weights[25]},{'w':fast_weights[28],'b':fast_weights[27]},
-                   {'w':fast_weights[30],'b':fast_weights[29]},{'w':fast_weights[32],'b':fast_weights[31]},{'w':fast_weights[34],'b':fast_weights[33]}],
-                   [{'w':fast_weights[36],'b':fast_weights[35]},{'w':fast_weights[38],'b':fast_weights[37]},
-                   {'w':fast_weights[40],'b':fast_weights[39]},{'w':fast_weights[42],'b':fast_weights[41]},{'w':fast_weights[44],'b':fast_weights[43]}],
-                   [{'w':fast_weights[46],'b':fast_weights[45]},{'w':fast_weights[48],'b':fast_weights[47]},
-                   {'w':fast_weights[50],'b':fast_weights[49]},{'w':fast_weights[52],'b':fast_weights[51]},{'w':fast_weights[54],'b':fast_weights[53]}]]
+            conv_dw_rep = fast_weights[:self.num_layers]
+            conv_pw_rep = fast_weights[self.num_layers:2*self.num_layers]
+            conv_pb_rep = fast_weights[2*self.num_layers:3*self.num_layers]
+            predict = fast_weights[3*self.num_layers:3*self.num_layers+3]
+            bn_rep_w = fast_weights[3*self.num_layers+3::2]
+            bn_rep_b = fast_weights[3*self.num_layers+4::2]
             
-
+            
         outputs = []
         for level in range(len(x)):
             x_level = x[level]
-            for conv_dw,conv_pw,bn = in zip(conv_dw_rep, conv_pw_rep, bn_rep):
+            bn_w_lev = bn_rep_w[level*self.num_layers:(level+1)*self.num_layers]
+            bn_b_lev = bn_rep_b[level*self.num_layers:(level+1)*self.num_layers]
+            for conv_dw,conv_pw,conv_pb,bn_w,bn_b in zip(conv_dw_rep, conv_pw_rep, conv_pb_rep, bn_w_lev, bn_b_lev):
                 x_level = F.conv2d(x_level, conv_dw, groups=conv_dw.shape[0])
-                x_level = F.conv2d(x_level, conv_pw['w'], conv_pw['b'])
-                x_level = F.batch_norm(x_level,self.running_mu,self.running_std,bn[level]['w'],bn[level]['b'],training=True)
+                x_level = F.conv2d(x_level, conv_pw, conv_pb)
+                x_level = F.batch_norm(x_level,self.running_mu,self.running_std,bn_w,bn_b,training=True)
                 x_level = self.act(x_level)
-            x_level = F.conv2d(x_level, predict['dw'], groups=predict['dw'].shape[0])
-            x_level = F.conv2d(x_level, predict['pw'], bias=predict['b'])
+            x_level = F.conv2d(x_level, predict[0], groups=predict[0].shape[0])
+            x_level = F.conv2d(x_level, predict[1], bias=predict[2])
             outputs.append(x_level)
         return outputs
 
