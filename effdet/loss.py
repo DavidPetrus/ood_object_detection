@@ -336,9 +336,6 @@ class SupportLoss(nn.Module):
             # NOTE: I haven't figured out what to do here wrt to tracing, is it an issue?
             l_fn = loss_jit
 
-        if not FLAGS.norm_supp:
-            num_positives = 1.
-
         return l_fn(
             cls_outputs, cls_targets, num_positives,
             num_classes=self.num_classes, alpha=alpha, gamma=self.gamma,

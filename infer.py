@@ -371,7 +371,11 @@ def main(argv):
 
         class_out, anchor_inps = model(supp_activs, mode='supp_cls')
         target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
-        supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
+        if not FLAGS.norm_supp:
+            supp_num_positives = 1.
+        else:
+            supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
+            
         if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
         supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
 
