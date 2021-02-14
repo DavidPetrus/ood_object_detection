@@ -615,7 +615,7 @@ class MetaHead(nn.Module):
                 self.bn_rep_b.append(nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.bias'.format(rep,lev)]))
 
 
-    def forward(self,x,fast_weights=None):
+    def forward(self,x,fast_weights=None,level_offset=0):
         if fast_weights is None:
             conv_dw_rep, conv_pw_rep, bn_rep_w, bn_rep_b, predict = self.conv_dw_rep, self.conv_pw_rep, self.bn_rep_w, self.bn_rep_b, self.predict
         else:
@@ -628,7 +628,7 @@ class MetaHead(nn.Module):
             
             
         outputs = []
-        for level in range(len(x)):
+        for level in range(level_offset,len(x)):
             x_level = x[level]
             bn_w_lev = bn_rep_w[level*self.num_layers:(level+1)*self.num_layers]
             bn_b_lev = bn_rep_b[level*self.num_layers:(level+1)*self.num_layers]
