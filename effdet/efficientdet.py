@@ -639,6 +639,7 @@ class MetaHead(nn.Module):
                 x_level = F.conv2d(x_level, conv_pw, conv_pb)
                 x_level = F.batch_norm(x_level,self.running_mu,self.running_std,bn_w,bn_b,training=True)
                 x_level = self.act(x_level)
+            x_level = F.pad(x_level,(1,1,1,1))
             x_level = F.conv2d(x_level, predict[0], groups=predict[0].shape[0])
             x_level = F.conv2d(x_level, predict[1], bias=predict[2])
             outputs.append(x_level)
