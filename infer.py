@@ -42,6 +42,7 @@ flags.DEFINE_integer('val_freq',400,'')
 flags.DEFINE_integer('n_way',1,'')
 flags.DEFINE_integer('num_sup',25,'')
 flags.DEFINE_integer('num_qry',10,'')
+flags.DEFINE_integer('num_zero_images',10,'')
 flags.DEFINE_integer('meta_batch_size',4,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
@@ -49,7 +50,6 @@ flags.DEFINE_integer('pretrain_classes',400,'')
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('multi_inner',True,'')
 flags.DEFINE_bool('norm_supp',True,'')
-flags.DEFINE_integer('num_zero_images',10,'')
 flags.DEFINE_bool('random_trans',True,'')
 flags.DEFINE_bool('supp_aug',True,'')
 flags.DEFINE_bool('only_final',False,'')
@@ -207,7 +207,6 @@ def main(argv):
         if 'class_net' in n:
             class_net_init_params[n] = v.data.detach().clone()
 
-    print(class_net_init_params.keys())
     model.class_net = MetaHead(model.config,pretrain_init=class_net_init_params)
     model.config.num_classes = 1
     model_config = model.config
@@ -216,22 +215,73 @@ def main(argv):
 
     anchor_net = AnchorNet(h, at_start=FLAGS.at_start)
 
+    loss_fn = DetectionLoss(model_config)
+    support_loss_fn = SupportLoss(model_config, loss_type=FLAGS.loss_type)
+
+
+    class MetaModel(nn.Module):
+        def __init__(self, model, anchor_net, supp_loss, loss, model_config):
+            self.model = model
+            self.anchor_net = anchor_net
+            self.supp_loss = supp_loss
+            self.loss = loss
+            self.config = model_config
+
+        def forward(self, supp_imgs, qry_imgs, qry_cls_anchors, qry_bbox_anchors, qry_num_positives, val_iter):
+            with torch.no_grad():
+                supp_activs = self.model(supp_imgs,mode='supp_bb')
+
+            with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
+                feats = self.model(qry_imgs,mode='bb')
+
+            with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
+                qry_activs, self.qry_box_out = self.model(feats,mode='not_cls')
+
+            class_out, anchor_inps = self.model(supp_activs, mode='supp_cls')
+            target_mul = self.anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
+            if not FLAGS.norm_supp:
+                supp_num_positives = 1.
+            else:
+                supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
+
+            if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
+            supp_class_loss = self.supp_loss(class_out, target_mul, supp_num_positives, anchor_net.alpha)
+
+            inner_grad = torch.autograd.grad(supp_class_loss, self.model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
+
+            fast_weights = []
+            for p_ix,par in enumerate(self.model.class_net.parameters()):
+                update_par = par - learnable_lr[min(p_ix,len(learnable_lr)-1)]*inner_grad[p_ix] if not inner_grad[p_ix] is None else par
+                fast_weights.append(update_par)
+
+            with torch.set_grad_enabled(not val_iter):
+                self.qry_class_out = self.model(qry_activs, fast_weights=fast_weights, mode='qry_cls')
+                qry_loss, qry_class_loss, qry_box_loss = self.loss(self.qry_class_out, self.qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
+
+            return qry_loss
+
+        def post_process(self):
+            class_out_post, box_out_post, indices, classes = _post_process(self.qry_class_out, self.qry_box_out, num_levels=self.config.num_levels, 
+                num_classes=self.config.num_classes, max_detection_points=self.config.max_detection_points)
+
+            return class_out_post, box_out_post, indices, classes
+
+
+    meta_model = MetaModel(model, anchor_net, support_loss_fn, loss_fn, model_config)
+
     anchors = Anchors.from_config(model_config).to('cuda')
 
     lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
     dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
 
-    loss_fn = DetectionLoss(model_config)
-    support_loss_fn = SupportLoss(model_config, loss_type=FLAGS.loss_type)
-
 
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
     imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
-    if FLAGS.multi_gpu: model = MyDataParallel(model)
-    model.to('cuda')
+    if FLAGS.multi_gpu: meta_model = MyDataParallel(meta_model)
+    meta_model.to('cuda')
 
     def set_bn_train(module):
         if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
@@ -242,29 +292,29 @@ def main(argv):
             module.eval()
 
     if not FLAGS.train_mode:
-        model.eval()
+        meta_model.model.eval()
     else:
         if FLAGS.freeze_bb_bn:    
-            model.backbone.apply(set_bn_eval)
+            meta_model.model.backbone.apply(set_bn_eval)
         if FLAGS.freeze_fpn_bn:
-            model.fpn.apply(set_bn_eval)
+            meta_model.model.fpn.apply(set_bn_eval)
         if FLAGS.freeze_box_bn:
-            model.box_net.apply(set_bn_eval)
+            meta_model.model.box_net.apply(set_bn_eval)
 
     anchor_net.to('cuda')
     if FLAGS.only_final:
-        inner_params = [{'params': model.class_net.predict.conv_pw.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
+        inner_params = [{'params': meta_model.model.class_net.predict.conv_pw.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
         #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
     else:
         if FLAGS.multi_inner:
-            inner_params = model.class_net.parameters()
+            inner_params = meta_model.model.class_net.parameters()
             learnable_lr = []
-            for ix,par in enumerate(model.class_net.parameters()):
+            for ix,par in enumerate(meta_model.model.class_net.parameters()):
                 if ix >= model_config.box_class_repeats*3+4: break
                 learnable_lr.append(nn.Parameter(torch.tensor(FLAGS.inner_lr)))
 
         else:
-            inner_params = [{'params': model.class_net.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
+            inner_params = [{'params': meta_model.model.class_net.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
             #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
 
     #learnable_lr = [par['lr'] for par in inner_params]
@@ -274,9 +324,9 @@ def main(argv):
 
     #learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
     print(len(learnable_lr))
-    meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
+    meta_param_groups = [{'params': meta_model.model.class_net.parameters(),'lr':FLAGS.meta_lr},
         {'params': anchor_net.parameters(),'lr':FLAGS.meta_lr},
-        {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
+        {'params': list(meta_model.model.backbone.parameters())+list(meta_model.model.fpn.parameters())+list(meta_model.model.box_net.parameters()),'lr':0.},
         {'params':learnable_lr,'lr':0.}]
 
     if not FLAGS.learn_inner:        
@@ -318,86 +368,41 @@ def main(argv):
         qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
 
         if not prev_val_iter and val_iter:
-            model.eval()
-            model.apply(set_bn_train)
+            meta_model.model.eval()
+            meta_model.model.apply(set_bn_train)
             if FLAGS.freeze_bb_bn:
-                model.backbone.apply(set_bn_eval)
+                meta_model.model.backbone.apply(set_bn_eval)
             if FLAGS.freeze_fpn_bn:
-                model.fpn.apply(set_bn_eval)
+                meta_model.model.fpn.apply(set_bn_eval)
             if FLAGS.freeze_box_bn:
-                model.box_net.apply(set_bn_eval)
+                meta_model.model.box_net.apply(set_bn_eval)
 
             for lr in learnable_lr:
                 lr.requires_grad = False
         elif prev_val_iter and not val_iter:
-            model.train()
+            meta_model.model.train()
             if FLAGS.freeze_bb_bn:
-                model.backbone.apply(set_bn_eval)
+                meta_model.model.backbone.apply(set_bn_eval)
             if FLAGS.freeze_fpn_bn:
-                model.fpn.apply(set_bn_eval)
+                meta_model.model.fpn.apply(set_bn_eval)
             if FLAGS.freeze_box_bn:
-                model.box_net.apply(set_bn_eval)
+                meta_model.model.box_net.apply(set_bn_eval)
 
             if FLAGS.learn_inner:
                 for lr in learnable_lr:
                     lr.requires_grad = True
-
-        with torch.no_grad():
-            supp_activs = model(supp_imgs,mode='supp_bb')
-
-        with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
-            feats= model(qry_imgs,mode='bb')
-
-        with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
-            qry_activs, qry_box_out = model(feats,mode='not_cls')
-
-        '''with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter,
-            device='cuda', override={'lr': learnable_lr}) as (fast_model, inner_opt):
-            for inner_ix in range(FLAGS.steps):
-                class_out, anchor_inps = fast_model(supp_activs, mode='supp_cls')
-                if inner_ix == 0 or not FLAGS.at_start:
-                    target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
-                    supp_cls_anchors = [torch.cat([tm_l.unsqueeze(2)*supp_cls_labs[:,c].view(FLAGS.num_sup*FLAGS.n_way,1,1,1,1) for c in range(FLAGS.n_way)],dim=2)
-                        .view(FLAGS.num_sup*FLAGS.n_way,num_anchs*FLAGS.n_way,tm_l.shape[2],tm_l.shape[3]) for tm_l in target_mul]
-                    supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
-                supp_class_loss = support_loss_fn(class_out, supp_cls_anchors, supp_num_positives, anchor_net.alpha)
-                inner_opt.step(supp_class_loss)
-
-            with torch.set_grad_enabled(not val_iter):
-                qry_class_out = fast_model(qry_activs, mode='qry_cls')
-                qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
-
-            if not val_iter:
-                qry_loss.backward()'''
-
-        class_out, anchor_inps = model(supp_activs, mode='supp_cls')
-        target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
-        if not FLAGS.norm_supp:
-            supp_num_positives = 1.
-        else:
-            supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
-
-        if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
-        supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
-
-        inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
-
-        fast_weights = []
-        for p_ix,par in enumerate(model.class_net.parameters()):
-            update_par = par - learnable_lr[min(p_ix,len(learnable_lr)-1)]*inner_grad[p_ix] if not inner_grad[p_ix] is None else par
-            fast_weights.append(update_par)
-
-        with torch.set_grad_enabled(not val_iter):
-            qry_class_out = model(qry_activs, fast_weights=fast_weights, mode='qry_cls')
-            qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
+        
+        qry_loss = meta_model(supp_imgs, qry_imgs, qry_cls_anchors, qry_bbox_anchors, qry_num_positives, val_iter)
+        print(qry_loss.size)
+        qry_loss = qry_loss.sum()
 
         if not val_iter:
             qry_loss.backward()
 
 
         with torch.no_grad():
-            class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
-                num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
+            class_out_post, box_out_post, indices, classes = meta_model.post_process()
+            print(class_out_post)
 
             for b_ix in range(FLAGS.n_way*(FLAGS.num_zero_images+FLAGS.num_qry)):
                 detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
@@ -438,7 +443,7 @@ def main(argv):
             if t_ix < FLAGS.meta_batch_size: continue
             else: t_ix = 0
 
-            iter_meta_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
+            iter_meta_norm = torch.nn.utils.clip_grad_norm_(meta_model.model.parameters(),10.)
             meta_norm += iter_meta_norm
             print(train_iter,datetime.datetime.now(),"Meta Norm:",iter_meta_norm)
             #torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
@@ -577,6 +582,26 @@ def main(argv):
             
         return grad_params
     '''
+
+
+    '''with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter,
+            device='cuda', override={'lr': learnable_lr}) as (fast_model, inner_opt):
+            for inner_ix in range(FLAGS.steps):
+                class_out, anchor_inps = fast_model(supp_activs, mode='supp_cls')
+                if inner_ix == 0 or not FLAGS.at_start:
+                    target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
+                    supp_cls_anchors = [torch.cat([tm_l.unsqueeze(2)*supp_cls_labs[:,c].view(FLAGS.num_sup*FLAGS.n_way,1,1,1,1) for c in range(FLAGS.n_way)],dim=2)
+                        .view(FLAGS.num_sup*FLAGS.n_way,num_anchs*FLAGS.n_way,tm_l.shape[2],tm_l.shape[3]) for tm_l in target_mul]
+                    supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
+                supp_class_loss = support_loss_fn(class_out, supp_cls_anchors, supp_num_positives, anchor_net.alpha)
+                inner_opt.step(supp_class_loss)
+
+            with torch.set_grad_enabled(not val_iter):
+                qry_class_out = fast_model(qry_activs, mode='qry_cls')
+                qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
+
+            if not val_iter:
+                qry_loss.backward()'''
 
 if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn', force=True)
