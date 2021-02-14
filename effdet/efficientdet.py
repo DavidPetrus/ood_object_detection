@@ -717,7 +717,7 @@ class EfficientDet(nn.Module):
     def __init__(self, config, pretrained_backbone=True, alternate_init=False):
         super(EfficientDet, self).__init__()
         self.config = config
-        set_config_readonly(self.config)
+        #set_config_readonly(self.config)
         self.backbone = create_model(
             config.backbone_name, features_only=True, out_indices=(2, 3, 4),
             pretrained=pretrained_backbone, **config.backbone_args)
