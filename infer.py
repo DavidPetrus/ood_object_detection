@@ -48,6 +48,7 @@ flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('multi_inner',True,'')
+flags.DEFINE_bool('norm_supp',True,'')
 flags.DEFINE_integer('num_zero_images',10,'')
 flags.DEFINE_bool('random_trans',True,'')
 flags.DEFINE_bool('supp_aug',True,'')
@@ -370,7 +371,8 @@ def main(argv):
 
         class_out, anchor_inps = model(supp_activs, mode='supp_cls')
         target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
-        supp_num_positives = sum([tm_l.sum((1,2,3)) for tm_l in target_mul])
+        supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
+        if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
         supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
 
         inner_grad = torch.autograd.grad(supp_class_loss, inner_params, only_inputs=True, create_graph=True)

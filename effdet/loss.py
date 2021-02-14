@@ -92,7 +92,7 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
         # compute the final loss and return
         return (1 / normalizer) * alpha_factor * loss
     else:
-        return loss
+        return (1 / normalizer) * loss
 
 
 def huber_loss(
@@ -161,7 +161,7 @@ def class_loss_fn(
         gamma: float,
         label_smoothing: float = 0.,
         legacy_focal: bool = False,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        loss_func=F.binary_cross_entropy_with_logits) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
 
     num_positives_sum = (num_positives.sum() + 1.0)
     levels = len(cls_outputs)
@@ -179,7 +179,7 @@ def class_loss_fn(
         cls_outputs_at_level = cls_outputs[l].permute(0, 2, 3, 1)
         cls_loss = new_focal_loss(
                 cls_outputs_at_level, cls_targets_at_level,
-                alpha=alpha, gamma=gamma, normalizer=num_positives_sum, label_smoothing=label_smoothing)
+                alpha=alpha, gamma=gamma, normalizer=num_positives_sum, label_smoothing=label_smoothing, loss_func=loss_func)
         cls_loss = cls_loss.reshape(bs, height, width, -1, num_classes)
         cls_losses.append(cls_loss.sum())   # FIXME reference code added a clamp here at some point ...clamp(0, 2))
 
@@ -200,8 +200,7 @@ def loss_fn(
         delta: float,
         box_loss_weight: float,
         label_smoothing: float = 0.,
-        legacy_focal: bool = False,
-        loss_func=F.binary_cross_entropy_with_logits) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        legacy_focal: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Computes total detection loss.
     Computes total detection loss including box and class loss from all levels.
     Args:
@@ -248,7 +247,7 @@ def loss_fn(
         else:
             cls_loss = new_focal_loss(
                 cls_outputs_at_level, cls_targets_at_level_oh,
-                alpha=alpha, gamma=gamma, normalizer=num_positives_sum, label_smoothing=label_smoothing, loss_func=loss_func)
+                alpha=alpha, gamma=gamma, normalizer=num_positives_sum, label_smoothing=label_smoothing)
         cls_loss = cls_loss.view(bs, height, width, -1, num_classes)
         cls_loss = cls_loss * (cls_targets_at_level != -2).unsqueeze(-1)
         cls_losses.append(cls_loss.sum())   # FIXME reference code added a clamp here at some point ...clamp(0, 2))
@@ -336,6 +335,9 @@ class SupportLoss(nn.Module):
             # This branch only active if parent / bench itself isn't being scripted
             # NOTE: I haven't figured out what to do here wrt to tracing, is it an issue?
             l_fn = loss_jit
+
+        if not FLAGS.norm_supp:
+            num_positives = 1.
 
         return l_fn(
             cls_outputs, cls_targets, num_positives,

@@ -708,7 +708,7 @@ class AnchorNet(nn.Module):
                 x_level = conv(x_level)
                 x_level = bn[level](x_level)
                 x_level = self.act(x_level)
-            outputs.append(self.anchor_out(x_level).sigmoid())
+            outputs.append(self.anchor_out(x_level))
         return outputs
 
 
