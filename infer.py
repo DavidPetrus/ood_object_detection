@@ -221,21 +221,16 @@ def main(argv):
 
     class MetaModel(nn.Module):
         def __init__(self, model, anchor_net, supp_loss, loss, model_config):
+            super(MetaModel, self).__init__()
             self.model = model
             self.anchor_net = anchor_net
             self.supp_loss = supp_loss
             self.loss = loss
             self.config = model_config
 
-        def forward(self, supp_imgs, qry_imgs, qry_cls_anchors, qry_bbox_anchors, qry_num_positives, val_iter):
+        def supp_forward(self, supp_imgs, val_iter):
             with torch.no_grad():
                 supp_activs = self.model(supp_imgs,mode='supp_bb')
-
-            with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
-                feats = self.model(qry_imgs,mode='bb')
-
-            with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
-                qry_activs, self.qry_box_out = self.model(feats,mode='not_cls')
 
             class_out, anchor_inps = self.model(supp_activs, mode='supp_cls')
             target_mul = self.anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
@@ -247,12 +242,15 @@ def main(argv):
             if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
             supp_class_loss = self.supp_loss(class_out, target_mul, supp_num_positives, anchor_net.alpha)
 
-            inner_grad = torch.autograd.grad(supp_class_loss, self.model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
+            return supp_class_loss
 
-            fast_weights = []
-            for p_ix,par in enumerate(self.model.class_net.parameters()):
-                update_par = par - learnable_lr[min(p_ix,len(learnable_lr)-1)]*inner_grad[p_ix] if not inner_grad[p_ix] is None else par
-                fast_weights.append(update_par)
+        def qry_forward(self, fast_weights, qry_imgs, qry_cls_anchors, qry_bbox_anchors, qry_num_positives, val_iter):
+
+            with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
+                feats = self.model(qry_imgs,mode='bb')
+
+            with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
+                qry_activs, self.qry_box_out = self.model(feats,mode='not_cls')
 
             with torch.set_grad_enabled(not val_iter):
                 self.qry_class_out = self.model(qry_activs, fast_weights=fast_weights, mode='qry_cls')
@@ -280,7 +278,8 @@ def main(argv):
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
     imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
-    if FLAGS.multi_gpu: meta_model = MyDataParallel(meta_model)
+    meta_model.eval()
+    if FLAGS.multi_gpu: meta_model = MyDataParallel(meta_model, device_ids=[0,1])
     meta_model.to('cuda')
 
     def set_bn_train(module):
@@ -291,7 +290,7 @@ def main(argv):
         if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
             module.eval()
 
-    if not FLAGS.train_mode:
+    '''if not FLAGS.train_mode:
         meta_model.model.eval()
     else:
         if FLAGS.freeze_bb_bn:    
@@ -299,7 +298,7 @@ def main(argv):
         if FLAGS.freeze_fpn_bn:
             meta_model.model.fpn.apply(set_bn_eval)
         if FLAGS.freeze_box_bn:
-            meta_model.model.box_net.apply(set_bn_eval)
+            meta_model.model.box_net.apply(set_bn_eval)'''
 
     anchor_net.to('cuda')
     if FLAGS.only_final:
@@ -367,7 +366,7 @@ def main(argv):
         supp_imgs = (supp_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
         qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
 
-        if not prev_val_iter and val_iter:
+        '''if not prev_val_iter and val_iter:
             meta_model.model.eval()
             meta_model.model.apply(set_bn_train)
             if FLAGS.freeze_bb_bn:
@@ -390,10 +389,16 @@ def main(argv):
 
             if FLAGS.learn_inner:
                 for lr in learnable_lr:
-                    lr.requires_grad = True
+                    lr.requires_grad = True'''
         
-        qry_loss = meta_model(supp_imgs, qry_imgs, qry_cls_anchors, qry_bbox_anchors, qry_num_positives, val_iter)
-        print(qry_loss.size)
+        supp_class_loss = meta_model.supp_forward(supp_imgs, val_iter)
+        inner_grad = torch.autograd.grad(supp_class_loss, meta_model.model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
+        fast_weights = []
+        for p_ix,par in enumerate(meta_model.model.class_net.parameters()):
+            update_par = par - learnable_lr[min(p_ix,len(learnable_lr)-1)]*inner_grad[p_ix] if not inner_grad[p_ix] is None else par
+            fast_weights.append(update_par)
+        
+        qry_loss = meta_model.qry_forward(fast_weights, qry_imgs, qry_cls_anchors, qry_bbox_anchors, qry_num_positives, val_iter)
         qry_loss = qry_loss.sum()
 
         if not val_iter:
@@ -402,7 +407,6 @@ def main(argv):
 
         with torch.no_grad():
             class_out_post, box_out_post, indices, classes = meta_model.post_process()
-            print(class_out_post)
 
             for b_ix in range(FLAGS.n_way*(FLAGS.num_zero_images+FLAGS.num_qry)):
                 detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
@@ -415,8 +419,8 @@ def main(argv):
             if not val_iter:
                 iter_metrics['supp_class_loss'] += supp_class_loss
                 iter_metrics['qry_loss'] += qry_loss
-                iter_metrics['qry_class_loss'] += qry_class_loss
-                iter_metrics['qry_bbox_loss'] += qry_box_loss
+                #iter_metrics['qry_class_loss'] += qry_class_loss
+                #iter_metrics['qry_bbox_loss'] += qry_box_loss
                 iter_metrics['mAP'] += map_metrics['Precision/mAP@0.5IOU']
                 iter_metrics['CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
                 for metric_key in list(map_metrics.keys())[2:]:
@@ -425,8 +429,8 @@ def main(argv):
             else:
                 val_metrics['val_supp_class_loss'] += supp_class_loss
                 val_metrics['val_qry_loss'] += qry_loss
-                val_metrics['val_qry_class_loss'] += qry_class_loss
-                val_metrics['val_qry_bbox_loss'] += qry_box_loss
+                #val_metrics['val_qry_class_loss'] += qry_class_loss
+                #val_metrics['val_qry_bbox_loss'] += qry_box_loss
                 val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
                 val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
                 for metric_key in list(map_metrics.keys())[2:]:
