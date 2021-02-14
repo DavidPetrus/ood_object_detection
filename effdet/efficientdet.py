@@ -591,8 +591,8 @@ class MetaHead(nn.Module):
             for l in range(self.num_layers)])
 
         # Build batchnorm repeats. There is a unique batchnorm per feature level for each repeat.
-        self.running_mu = torch.zeros(num_channels)
-        self.running_std = torch.ones(num_channels)
+        self.running_mu = torch.zeros(num_channels).cuda()
+        self.running_std = torch.ones(num_channels).cuda()
         self.act = Swish(inplace=True)
 
 
