@@ -228,7 +228,7 @@ def main(argv):
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
     imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
     imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
-    if FLAGS.mulit_gpu: model = MyDataParallel(model)
+    if FLAGS.multi_gpu: model = MyDataParallel(model)
     model.to('cuda')
 
     def set_bn_train(module):
