@@ -208,7 +208,7 @@ def main(argv):
 
     print(class_net_init_params.keys())
     model.class_net = MetaHead(model.config,pretrain_init=class_net_init_params)
-
+    model.config.num_classes = 1
     model_config = model.config
     print(model_config['num_classes'])
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
@@ -375,7 +375,7 @@ def main(argv):
             supp_num_positives = 1.
         else:
             supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
-            
+
         if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
         supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
 

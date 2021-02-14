@@ -174,7 +174,7 @@ def class_loss_fn(
         #bs, height, width, _, _ = cls_targets_at_level_oh.shape
         #cls_targets_at_level_oh = cls_targets_at_level_oh.view(bs, height, width, -1)
 
-        bs, height, width, _ = cls_targets[l].shape
+        bs, _, height, width = cls_targets[l].shape
         cls_targets_at_level = cls_targets[l].permute(0, 2, 3, 1)
         cls_outputs_at_level = cls_outputs[l].permute(0, 2, 3, 1)
         cls_loss = new_focal_loss(
