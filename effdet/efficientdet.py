@@ -598,7 +598,7 @@ class MetaHead(nn.Module):
 
         self.predict = nn.ParameterList([
             nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight']),
-            nn.Parameter(torch.randn((num_channels,num_anchors,1,1))*((1/num_channels)**0.5)),
+            nn.Parameter(torch.randn((num_anchors,num_channels,1,1))*((1/num_channels)**0.5)),
             nn.Parameter(torch.full([num_anchors],-math.log((1 - 0.01) / 0.01)))])
 
 
