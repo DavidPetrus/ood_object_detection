@@ -583,27 +583,45 @@ class MetaHead(nn.Module):
         self.conv_pw_rep = nn.ParameterList([nn.Parameter(torch.randn((num_channels,in_channels,1,1))*((1/in_channels)**0.5))] +
             [nn.Parameter(torch.randn((num_channels,num_channels,1,1))*((1/num_channels)**0.5)) for _ in range(FLAGS.num_conv-1)])'''
 
-        self.conv_dw_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_dw.weight'.format(l)]) 
-            for l in range(self.num_layers)])
-        self.conv_pw_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.weight'.format(l)])
-            for l in range(self.num_layers)])
-        self.conv_pb_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.bias'.format(l)])
-            for l in range(self.num_layers)])
+        
+        #nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_dw.weight'.format(l)]) 
+        #    for l in range(self.num_layers)])
+        #self.conv_pw_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.weight'.format(l)])
+        #    for l in range(self.num_layers)])
+        #self.conv_pb_rep = nn.ParameterList([nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.bias'.format(l)])
+        #    for l in range(self.num_layers)])
+
+        self.conv_dw_rep = []
+        self.conv_pw_rep = []
+        self.conv_pb_rep = []
+        for l in range(self.num_layers):
+            setattr(self, "conv_dw{}".format(l), nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_dw.weight'.format(l)]))
+            self.conv_dw_rep.append(getattr(self, "conv_dw{}".format(l)))
+        for l in range(self.num_layers):
+            setattr(self, "conv_pw{}".format(l), nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.weight'.format(l)]))
+            self.conv_pw_rep.append(getattr(self, "conv_pw{}".format(l)))
+        for l in range(self.num_layers):
+            setattr(self, "conv_pb{}".format(l), nn.Parameter(pretrain_init['class_net.conv_rep.{}.conv_pw.bias'.format(l)]))
+            self.conv_pb_rep.append(getattr(self, "conv_pb{}".format(l)))
+
 
         # Build batchnorm repeats. There is a unique batchnorm per feature level for each repeat.
         self.running_mu = torch.zeros(num_channels).cuda()
         self.running_std = torch.ones(num_channels).cuda()
         self.act = Swish(inplace=True)
 
+        self.predict_dw = nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight'])
+        self.predict_pw = nn.Parameter(torch.randn((num_anchors,num_channels,1,1))*((1/num_channels)**0.5))
+        self.predict_pb = nn.Parameter(torch.full([num_anchors],-math.log((1 - 0.01) / 0.01)))
+        self.predict = [self.predict_dw, self.predict_pw, self.predict_pb]
+        #self.predict = nn.ParameterList([
+        #    nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight']),
+        #    nn.Parameter(torch.randn((num_anchors,num_channels,1,1))*((1/num_channels)**0.5)),
+        #    nn.Parameter(torch.full([num_anchors],-math.log((1 - 0.01) / 0.01)))])
 
-        self.predict = nn.ParameterList([
-            nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight']),
-            nn.Parameter(torch.randn((num_anchors,num_channels,1,1))*((1/num_channels)**0.5)),
-            nn.Parameter(torch.full([num_anchors],-math.log((1 - 0.01) / 0.01)))])
 
-
-        self.bn_rep_w = nn.ParameterList()
-        self.bn_rep_b = nn.ParameterList()
+        self.bn_rep_w = []
+        self.bn_rep_b = []
         '''for _ in range(FLAGS.num_conv):
             self.bn_rep.append(nn.ParameterList([nn.ParameterDict({'w':nn.Parameter(torch.ones(num_channels)),
                 'b':nn.Parameter(torch.zeros(num_channels))})
@@ -611,8 +629,13 @@ class MetaHead(nn.Module):
 
         for lev in range(self.num_levels):
             for rep in range(self.num_layers):
-                self.bn_rep_w.append(nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.weight'.format(rep,lev)]))
-                self.bn_rep_b.append(nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.bias'.format(rep,lev)]))
+                setattr(self, "bn_w{}{}".format(rep,lev), nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.weight'.format(rep,lev)]))
+                self.bn_rep_w.append(getattr(self, "bn_w{}{}".format(rep,lev)))
+
+        for lev in range(self.num_levels):
+            for rep in range(self.num_layers):
+                setattr(self, "bn_b{}{}".format(rep,lev), nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.bias'.format(rep,lev)]))
+                self.bn_rep_b.append(getattr(self, "bn_b{}{}".format(rep,lev)))
 
 
     def forward(self,x,fast_weights=None,level_offset=0):
