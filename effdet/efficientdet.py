@@ -595,7 +595,6 @@ class MetaHead(nn.Module):
         self.running_std = torch.ones(num_channels)
         self.act = Swish(inplace=True)
 
-        #self.pred_conv = nn.ParameterDict({'dw':nn.Parameter(torch.randn((num_channels,num_channels,3,3))*((1/num_channels)**0.5)),
 
         self.predict = nn.ParameterList([
             nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight']),
