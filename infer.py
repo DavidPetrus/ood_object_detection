@@ -255,7 +255,8 @@ def main(argv):
         if FLAGS.multi_inner:
             inner_params = model.class_net.parameters()
             learnable_lr = []
-            for par in model.class_net.parameters()[:model_config.box_class_repeats*3+4]:
+            for ix,par in enumerate(model.class_net.parameters()):
+                if ix >= model_config.box_class_repeats*3+4: break
                 learnable_lr.append(nn.Parameter(torch.tensor(FLAGS.inner_lr)))
 
         else:
