@@ -606,8 +606,8 @@ class MetaHead(nn.Module):
 
 
         # Build batchnorm repeats. There is a unique batchnorm per feature level for each repeat.
-        self.running_mu = torch.zeros(num_channels).cuda()
-        self.running_std = torch.ones(num_channels).cuda()
+        self.running_mu = torch.zeros(num_channels).to('cuda:1')
+        self.running_std = torch.ones(num_channels).to('cuda:1')
         self.act = Swish(inplace=True)
 
         self.predict_dw = nn.Parameter(pretrain_init['class_net.predict.conv_dw.weight'])
@@ -809,14 +809,14 @@ class EfficientDet(nn.Module):
                 return x_class, anchor_inps
         elif mode=='supp_bb':
             x = self.backbone(x)
-            activs = self.fpn(x)
+            activs = self.fpn([feat.to('cuda:0') for feat in x])
             return activs
         elif mode=='bb':
             feats = self.backbone(x)
             return feats
         elif mode=='not_cls':
-            activs = self.fpn(x)
-            x_box = self.box_net(activs)
+            activs = self.fpn([feat.to('cuda:0') for feat in x])
+            x_box = self.box_net([activ.to('cuda:1') for activ in activs])
             return activs, x_box
         elif mode=='qry_cls':
             x_class = self.class_net(x,fast_weights=fast_weights)

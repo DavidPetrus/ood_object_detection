@@ -41,7 +41,8 @@ flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('val_freq',400,'')
 flags.DEFINE_integer('n_way',1,'')
 flags.DEFINE_integer('num_sup',25,'')
-flags.DEFINE_integer('num_qry',10,'')
+flags.DEFINE_integer('num_qry',6,'')
+flags.DEFINE_integer('num_zero_images',4,'')
 flags.DEFINE_integer('meta_batch_size',4,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
@@ -49,7 +50,6 @@ flags.DEFINE_integer('pretrain_classes',400,'')
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('multi_inner',True,'')
 flags.DEFINE_bool('norm_supp',True,'')
-flags.DEFINE_integer('num_zero_images',10,'')
 flags.DEFINE_bool('random_trans',True,'')
 flags.DEFINE_bool('supp_aug',True,'')
 flags.DEFINE_bool('only_final',False,'')
@@ -216,7 +216,7 @@ def main(argv):
 
     anchor_net = AnchorNet(h, at_start=FLAGS.at_start)
 
-    anchors = Anchors.from_config(model_config).to('cuda')
+    anchors = Anchors.from_config(model_config).to('cuda:1')
 
     lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
     dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
@@ -228,11 +228,17 @@ def main(argv):
 
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
-    imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda')).view(1, 3, 1, 1)
-    imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda')).view(1, 3, 1, 1)
-    if FLAGS.multi_gpu: model = MyDataParallel(model)
-    model.to('cuda')
-
+    imagenet_mean = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_MEAN],device=torch.device('cuda:1')).view(1, 3, 1, 1)
+    imagenet_std = torch.tensor([x * 255 for x in IMAGENET_DEFAULT_STD],device=torch.device('cuda:1')).view(1, 3, 1, 1)
+    #if FLAGS.multi_gpu: model = MyDataParallel(model)
+    if FLAGS.multi_gpu:
+        model.backbone.to('cuda:1')
+        model.fpn.to('cuda:0')
+        model.box_net.to('cuda:1')
+        model.class_net.to('cuda:1')
+    else:
+        model.to('cuda')
+    
     def set_bn_train(module):
         if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
             module.train()
@@ -251,7 +257,7 @@ def main(argv):
         if FLAGS.freeze_box_bn:
             model.box_net.apply(set_bn_eval)
 
-    anchor_net.to('cuda')
+    anchor_net.to('cuda:1')
     if FLAGS.only_final:
         inner_params = [{'params': model.class_net.predict.conv_pw.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
         #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
@@ -310,12 +316,12 @@ def main(argv):
         supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
 
         supp_cls_labs = supp_cls_labs.to('cuda')
-        qry_cls_anchors = [cls_anchor.to('cuda') for cls_anchor in qry_labs['cls_anchor']]
-        qry_bbox_anchors = [bbox_anchor.to('cuda') for bbox_anchor in qry_labs['bbox_anchor']]
-        qry_num_positives = qry_labs['num_positives'].to('cuda')
+        qry_cls_anchors = [cls_anchor.to('cuda:1') for cls_anchor in qry_labs['cls_anchor']]
+        qry_bbox_anchors = [bbox_anchor.to('cuda:1') for bbox_anchor in qry_labs['bbox_anchor']]
+        qry_num_positives = qry_labs['num_positives'].to('cuda:1')
         
-        supp_imgs = (supp_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
-        qry_imgs = (qry_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
+        supp_imgs = (supp_imgs.to('cuda:1').float()-imagenet_mean)/imagenet_std
+        qry_imgs = (qry_imgs.to('cuda:1').float()-imagenet_mean)/imagenet_std
 
         if not prev_val_iter and val_iter:
             model.eval()
@@ -345,11 +351,28 @@ def main(argv):
         with torch.no_grad():
             supp_activs = model(supp_imgs,mode='supp_bb')
 
+        '''qry_activs = [[],[],[],[],[]]
+        qry_box_out = [[],[],[],[],[]]
+        for b_ix in range(0,len(qry_imgs),4):
+            with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
+                feats= model(qry_imgs[b_ix:b_ix+4],mode='bb')
+
+            with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
+                qry_activs_b, qry_box_out_b = model(feats,mode='not_cls')
+                for l_ix,lev in enumerate(qry_activs_b):
+                    qry_activs[l_ix].append(lev)
+
+                for l_ix,lev in enumerate(qry_box_out_b):
+                    qry_box_out[l_ix].append(lev)'''
+
         with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
             feats= model(qry_imgs,mode='bb')
 
         with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
             qry_activs, qry_box_out = model(feats,mode='not_cls')
+
+        #qry_activs = [torch.cat(activ,dim=0) for activ in qry_activs]
+        #qry_box_out = [torch.cat(box,dim=0) for box in qry_box_out]
 
         '''with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter,
             device='cuda', override={'lr': learnable_lr}) as (fast_model, inner_opt):
@@ -370,7 +393,7 @@ def main(argv):
             if not val_iter:
                 qry_loss.backward()'''
 
-        class_out, anchor_inps = model(supp_activs, mode='supp_cls')
+        class_out, anchor_inps = model([act.to('cuda:1') for act in supp_activs], mode='supp_cls')
         target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
         if not FLAGS.norm_supp:
             supp_num_positives = 1.
@@ -388,12 +411,12 @@ def main(argv):
             fast_weights.append(update_par)
 
         with torch.set_grad_enabled(not val_iter):
-            qry_class_out = model(qry_activs, fast_weights=fast_weights, mode='qry_cls')
+            qry_class_out = model([act.to('cuda:1') for act in qry_activs], fast_weights=fast_weights, mode='qry_cls')
+            #qry_box_out = [box_out.to('cuda:1') for box_out in qry_box_out]
             qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
         if not val_iter:
             qry_loss.backward()
-
 
         with torch.no_grad():
             class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
