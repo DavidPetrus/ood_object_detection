@@ -638,7 +638,7 @@ class MetaHead(nn.Module):
                 self.bn_rep_b.append(getattr(self, "bn_b{}{}".format(rep,lev)))
 
 
-    def forward(self,x,fast_weights=None,level_offset=0):
+    def forward(self, x, fast_weights=None, ret_activs=False, level_offset=0):
         if fast_weights is None:
             conv_dw_rep, conv_pw_rep, conv_pb_rep = self.conv_dw_rep, self.conv_pw_rep, self.conv_pb_rep
             bn_rep_w, bn_rep_b, predict = self.bn_rep_w, self.bn_rep_b, self.predict
@@ -652,6 +652,7 @@ class MetaHead(nn.Module):
             
             
         outputs = []
+        if ret_activs: activs = []
         for level in range(level_offset,len(x)):
             x_level = x[level]
             bn_w_lev = bn_rep_w[level*self.num_layers:(level+1)*self.num_layers]
@@ -662,11 +663,57 @@ class MetaHead(nn.Module):
                 x_level = F.conv2d(x_level, conv_pw, conv_pb)
                 x_level = F.batch_norm(x_level,self.running_mu,self.running_std,bn_w,bn_b,training=True)
                 x_level = self.act(x_level)
-            x_level = F.pad(x_level,(1,1,1,1))
-            x_level = F.conv2d(x_level, predict[0], groups=predict[0].shape[0])
-            x_level = F.conv2d(x_level, predict[1], bias=predict[2])
-            outputs.append(x_level)
-        return outputs
+
+            #if ret_activs: activs.append(x_level)
+            x_pred = F.pad(x_level,(1,1,1,1))
+            x_pred = F.conv2d(x_pred, predict[0], groups=predict[0].shape[0])
+            if ret_activs: activs.append(x_pred)
+            x_pred = F.conv2d(x_pred, predict[1], bias=predict[2])
+            outputs.append(x_pred)
+
+        if ret_activs:
+            return activs,outputs
+        else:
+            return outputs
+
+
+class ProjectionNet(nn.Module):
+    
+    def __init__(self, config, width):
+        super(ProjectionNet, self).__init__()
+
+        self.dot_mult = nn.Parameter(torch.tensor(FLAGS.dot_mult))
+        self.dot_add = nn.Parameter(torch.tensor(FLAGS.dot_add))
+
+        locs = torch.arange(start=-1.,end=1.,step=1/8)*3.14159
+        locs = locs[:config.num_anchors]
+        pos_enc = []
+        for freq in range(4):
+            pos_enc.append(torch.sin(2**freq * locs))
+            pos_enc.append(torch.cos(2**freq * locs))
+
+        self.pos_enc = torch.stack(pos_enc).transpose(0,1)
+        print(self.pos_enc.shape)
+
+        self.width = width
+        self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8, width), nn.ReLU(),
+                                        nn.Linear(width, width), nn.ReLU(),
+                                        nn.Linear(width, width))
+
+    def weighted_median(self, embds, confs):
+        conf_sum = confs.sum()
+        sorted_elems, sorted_idxs = torch.sort(embds,dim=0)
+        sorted_confs = confs[sorted_idxs.transpose(0,1)].transpose(0,1)
+        cum_sum = torch.cumsum(sorted_confs,dim=0)
+        mask = (cum_sum >= conf_sum/2).long()
+        median_idxs = torch.argmax(mask, dim=0).view(1,-1)
+        median_embd = torch.gather(sorted_elems,0,median_idxs)
+
+        return median_embd
+
+
+    def forward(self, x):
+        return self.projection(x)
 
 
 class AnchorNet(nn.Module):

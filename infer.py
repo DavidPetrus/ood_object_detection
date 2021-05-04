@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.funtional as F
 
 import numpy as np
 #import cv2
@@ -7,13 +8,13 @@ from omegaconf import OmegaConf
 import datetime
 
 from timm.models import load_checkpoint
-from effdet.efficientdet import EfficientDet, AnchorNet, MetaHead
+from effdet.efficientdet import EfficientDet, AnchorNet, ProjectionNet, MetaHead
 from effdet.helpers import load_pretrained
 from effdet.config.model_config import default_detection_model_configs
 from effdet.distributed import all_gather_container
 from effdet.bench import _post_process
 from effdet.anchors import Anchors, AnchorLabeler, generate_detections
-from effdet.loss import DetectionLoss, SupportLoss
+from effdet.loss import DetectionLoss, SupportLoss, smooth_l1_loss
 from effdet.evaluation.detection_evaluator import ObjectDetectionEvaluator
 
 
@@ -41,13 +42,19 @@ flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('val_freq',400,'')
 flags.DEFINE_integer('n_way',1,'')
 flags.DEFINE_integer('num_sup',25,'')
-flags.DEFINE_integer('num_qry',6,'')
-flags.DEFINE_integer('num_zero_images',4,'')
+flags.DEFINE_integer('num_qry',8,'')
+flags.DEFINE_integer('num_zero_images',8,'')
 flags.DEFINE_integer('meta_batch_size',4,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
+flags.DEFINE_bool('use_anchor',False,'')
+flags.DEFINE_integer('proj_depth',3,'')
+flags.DEFINE_integer('proj_size',256,'')
+flags.DEFINE_float('dot_mult',5.,'')
+flags.DEFINE_float('dot_add',-3.,'')
+flags.DEFINE_string('norm_factor','2','1,2,inf or None')
 flags.DEFINE_bool('multi_inner',True,'')
 flags.DEFINE_bool('norm_supp',True,'')
 flags.DEFINE_bool('random_trans',True,'')
@@ -65,7 +72,7 @@ flags.DEFINE_bool('freeze_bb_bn',True,'')
 flags.DEFINE_bool('freeze_fpn_bn',True,'')
 flags.DEFINE_bool('freeze_box_bn',True,'')
 flags.DEFINE_bool('train_bb',False,'')
-flags.DEFINE_bool('train_fpn',True,'')
+flags.DEFINE_bool('train_fpn',False,'')
 flags.DEFINE_bool('fpn',True,'')
 flags.DEFINE_bool('large_qry',True,'')
 flags.DEFINE_bool('train_mode',True,'')
@@ -74,11 +81,11 @@ flags.DEFINE_float('inner_lr',0.1,'')
 flags.DEFINE_integer('steps',1,'')
 flags.DEFINE_float('gamma',0.,'')
 flags.DEFINE_float('bbox_coeff',5.,'')
-flags.DEFINE_bool('supp_alpha',True,'')
+flags.DEFINE_bool('supp_alpha',False,'')
 flags.DEFINE_float('inner_alpha',0.25,'')
 flags.DEFINE_float('alpha',0.25,'')
 flags.DEFINE_integer('supp_level_offset',2,'')
-flags.DEFINE_bool('at_start',True,'')
+flags.DEFINE_bool('at_start',False,'')
 flags.DEFINE_float('nms_thresh',0.3,'')
 flags.DEFINE_integer('max_dets',30,'')
 flags.DEFINE_bool('learn_inner',True,'')
@@ -207,14 +214,18 @@ def main(argv):
         if 'class_net' in n:
             class_net_init_params[n] = v.data.detach().clone()
 
-    print(class_net_init_params.keys())
+    #print(class_net_init_params.keys())
     model.class_net = MetaHead(model.config,pretrain_init=class_net_init_params)
     model.config.num_classes = 1
     model_config = model.config
     print(model_config['num_classes'])
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
 
-    anchor_net = AnchorNet(h, at_start=FLAGS.at_start)
+    if FLAGS.use_anchor:
+        anchor_net = AnchorNet(h, at_start=FLAGS.at_start)
+    else:
+        proj_net = ProjectionNet(model_config, FLAGS.proj_size).to('cuda')
+
 
     anchors = Anchors.from_config(model_config).to('cuda:1')
 
@@ -223,7 +234,10 @@ def main(argv):
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
 
     loss_fn = DetectionLoss(model_config)
-    support_loss_fn = SupportLoss(model_config, loss_type=FLAGS.loss_type)
+    if FLAGS.use_anchor:
+        support_loss_fn = SupportLoss(model_config, loss_type=FLAGS.loss_type)
+    else:
+        support_loss_fn = smooth_l1_loss
 
 
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
@@ -257,7 +271,7 @@ def main(argv):
         if FLAGS.freeze_box_bn:
             model.box_net.apply(set_bn_eval)
 
-    anchor_net.to('cuda:1')
+    if FLAGS.use_anchor: anchor_net.to('cuda:1')
     if FLAGS.only_final:
         inner_params = [{'params': model.class_net.predict.conv_pw.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
         #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
@@ -280,10 +294,16 @@ def main(argv):
 
     #learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
     print(len(learnable_lr))
-    meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
-        {'params': anchor_net.parameters(),'lr':FLAGS.meta_lr},
-        {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
-        {'params':learnable_lr,'lr':0.}]
+    if FLAGS.use_anchor:
+        meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
+            {'params': anchor_net.parameters(),'lr':FLAGS.meta_lr},
+            {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
+            {'params':learnable_lr,'lr':0.}]
+    else:
+        meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
+            {'params': proj_net.parameters(),'lr':FLAGS.meta_lr},
+            {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
+            {'params':learnable_lr,'lr':0.}]
 
     if not FLAGS.learn_inner:        
         for lr in learnable_lr:
@@ -393,15 +413,57 @@ def main(argv):
             if not val_iter:
                 qry_loss.backward()'''
 
-        class_out, anchor_inps = model([act.to('cuda:1') for act in supp_activs], mode='supp_cls')
-        target_mul = anchor_net(anchor_inps[FLAGS.at_start*FLAGS.supp_level_offset:])
-        if not FLAGS.norm_supp:
-            supp_num_positives = 1.
-        else:
-            supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
+        class_out, obj_embds = model([act.to('cuda:1') for act in supp_activs], mode='supp_cls')
+        if FLAGS.use_anchor:
+            target_mul = anchor_net(obj_embds[FLAGS.at_start*FLAGS.supp_level_offset:])
 
-        if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
-        supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
+            if not FLAGS.norm_supp:
+                supp_num_positives = torch.tensor(1.)
+            else:
+                supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
+
+            if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
+            supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
+        else:
+            conf_embds = []
+            obj_indices = []
+            proj_embds = []
+            confs = []
+            for level_embds,level_conf in zip(obj_embds, class_out):
+                # ENSURE CHANNELS LAST!!
+                print(level_embds.shape)
+                flat_embds = level_embds.view(-1, model_config.fpn_channels)
+                pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
+                rep_embds = flat_embds.repeat_interleave(model_config.num_anchors, dim=0)
+                print(pos_enc)
+                feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
+                print(feed_embds.shape)
+
+                #idxs = torch.nonzero(level_conf.view(-1) > FLAGS.conf_thresh)
+                #obj_indices.append(idxs)
+                #conf_embds.append(torch.index_select(feed_embds,0,idxs))
+                print(level_conf.shape)
+                confs.append(level_conf.view(-1))
+                conf_embds.append(feed_embds)
+                proj_embds.append(proj_net(conf_embds[-1]))
+
+            median_embd = proj_net.weighted_median(torch.cat(proj_embds,dim=0), torch.cat(confs))
+            if FLAGS.norm_factor != 'None':
+                norm_exp = float(FLAGS.norm_factor)
+            else:
+                norm_exp = None
+
+            print(median_embd.shape)
+            median_embd = F.normalize(median_embd, p=norm_exp, dim=0) if norm_exp is not None else median_embd
+            supp_losses = []
+            for level_proj,level_conf in zip(proj_embds, class_out):
+                norm_proj = F.normalize(level_proj, p=norm_exp, dim=0) if norm_exp is not None else level_proj
+                dot_prod = torch.dot(norm_proj, median_embd)
+                print(dot_prod.shape)
+                target = proj_net.dot_mult*dot_prod.view(*level_conf.shape) + proj_net.dot_add
+                supp_losses.append(support_loss_fn(level_conf,target,weights=level_conf.sigmoid()))
+
+            supp_class_loss = sum(supp_losses)/len(supp_losses)
 
         inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
 
@@ -475,11 +537,11 @@ def main(argv):
 
 
         if log_val:
-            if not FLAGS.supp_alpha:
-                inner_alpha_log = 0.
-            else:
-                inner_alpha_log = anchor_net.alpha.data if FLAGS.learn_alpha else anchor_net.alpha
-            log_metrics = {'iteration':train_iter,'alpha':inner_alpha_log}
+            #if not FLAGS.supp_alpha:
+            #    inner_alpha_log = 0.
+            #else:
+            #    inner_alpha_log = anchor_net.alpha.data if FLAGS.learn_alpha else anchor_net.alpha
+            log_metrics = {'iteration':train_iter,'proj_mult':proj_net.dot_mult.data,'proj_add':proj_net.dot_add.data}
             for lr_ix,lr in enumerate(learnable_lr):
                 log_metrics['inner'+str(lr_ix)] = lr.data
             
