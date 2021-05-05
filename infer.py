@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.funtional as F
+import torch.nn.functional as F
 
 import numpy as np
 #import cv2
@@ -202,6 +202,9 @@ def main(argv):
     model_config = model.config
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
 
+    for n,v in model.class_net.named_parameters():
+        print(n,v.shape)
+
     if FLAGS.use_anchor:
         anchor_net = AnchorNet(h, at_start=FLAGS.at_start)
     else:
@@ -249,19 +252,17 @@ def main(argv):
         if FLAGS.freeze_box_bn: model.box_net.apply(set_bn_eval)
 
     if FLAGS.use_anchor: anchor_net.to('cuda')
+
     if FLAGS.only_final:
-        inner_params = [{'params': model.class_net.predict.conv_pw.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
+        learnable_lr = [nn.Parameter(torch.tensor(FLAGS.inner_lr))]
+        #inner_params = [{'params': model.class_net.predict.conv_pw.parameters(), 'lr': learnable_lr[0]}]
         #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
     else:
         if FLAGS.multi_inner:
-            inner_params = model.class_net.parameters()
-            learnable_lr = []
-            for ix,par in enumerate(model.class_net.parameters()):
-                if ix >= model_config.box_class_repeats*3+4: break
-                learnable_lr.append(nn.Parameter(torch.tensor(FLAGS.inner_lr)))
-
+            #inner_params = model.class_net.parameters()
+            learnable_lr = [nn.Parameter(torch.tensor(FLAGS.inner_lr)) for l in range(model_config.box_class_repeats+4)]
         else:
-            inner_params = [{'params': model.class_net.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
+            #inner_params = [{'params': model.class_net.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
             #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
             learnable_lr = [par['lr'] for par in inner_params]
 
@@ -398,8 +399,20 @@ def main(argv):
         inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
 
         fast_weights = []
-        for p_ix,par in enumerate(model.class_net.parameters()):
-            update_par = par - learnable_lr[min(p_ix,len(learnable_lr)-1)]*inner_grad[p_ix] if not inner_grad[p_ix] is None else par
+        for p_ix,tup in enumerate(model.class_net.named_parameters()):
+            n,par = tup
+            if 'bn_' in n:
+                par_lr = learnable_lr[-1]
+            elif 'predict_dw' in n:
+                par_lr = learnable_lr[-4]
+            elif 'predict_pw' in n:
+                par_lr = learnable_lr[-3]
+            elif 'predict_pb' in n:
+                par_lr = learnable_lr[-2]
+            else:
+                par_lr = learnable_lr[int(n[7])]
+
+            update_par = par - par_lr*inner_grad[p_ix] if not inner_grad[p_ix] is None else par
             fast_weights.append(update_par)
 
         with torch.set_grad_enabled(not val_iter):
