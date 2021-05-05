@@ -856,7 +856,7 @@ class EfficientDet(nn.Module):
                 return x_class, anchor_inps
         elif mode=='supp_bb':
             x = self.backbone(x)
-            activs = self.fpn([feat.to('cuda:0') for feat in x])
+            activs = self.fpn(x)
             return activs
         elif mode=='bb':
             feats = self.backbone(x)

@@ -202,9 +202,6 @@ def main(argv):
     model_config = model.config
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
 
-    for n,v in model.class_net.named_parameters():
-        print(n,v.shape)
-
     if FLAGS.use_anchor:
         anchor_net = AnchorNet(h, at_start=FLAGS.at_start)
     else:
@@ -260,7 +257,7 @@ def main(argv):
     else:
         if FLAGS.multi_inner:
             #inner_params = model.class_net.parameters()
-            learnable_lr = [nn.Parameter(torch.tensor(FLAGS.inner_lr)) for l in range(model_config.box_class_repeats+4)]
+            learnable_lr = [nn.Parameter(torch.tensor(FLAGS.inner_lr)) for l in range(model_config.box_class_repeats+2)]
         else:
             #inner_params = [{'params': model.class_net.parameters(), 'lr': nn.Parameter(torch.tensor(FLAGS.inner_lr))}]
             #inner_optimizer = torch.optim.SGD(inner_params, lr=FLAGS.inner_lr)
@@ -322,19 +319,17 @@ def main(argv):
             if FLAGS.freeze_bb_bn: model.backbone.apply(set_bn_eval)
             if FLAGS.freeze_fpn_bn: model.fpn.apply(set_bn_eval)
             if FLAGS.freeze_box_bn: model.box_net.apply(set_bn_eval)
-
             for lr in learnable_lr: lr.requires_grad = False
-
         elif prev_val_iter and not val_iter:
             model.train()
             if FLAGS.freeze_bb_bn: model.backbone.apply(set_bn_eval)
             if FLAGS.freeze_fpn_bn: model.fpn.apply(set_bn_eval)
             if FLAGS.freeze_box_bn: model.box_net.apply(set_bn_eval)
-
             if FLAGS.learn_inner:
                 for lr in learnable_lr:
                     lr.requires_grad = True
 
+        # Run test with grad enabled when training fpn!!
         with torch.no_grad():
             supp_activs = model(supp_imgs,mode='supp_bb')
 
@@ -401,18 +396,21 @@ def main(argv):
         fast_weights = []
         for p_ix,tup in enumerate(model.class_net.named_parameters()):
             n,par = tup
-            if 'bn_' in n:
-                par_lr = learnable_lr[-1]
-            elif 'predict_dw' in n:
-                par_lr = learnable_lr[-4]
-            elif 'predict_pw' in n:
-                par_lr = learnable_lr[-3]
-            elif 'predict_pb' in n:
-                par_lr = learnable_lr[-2]
+            if 'bn_' in n or (FLAGS.only_final and 'predict_p' not in n):
+                update_par = par
             else:
-                par_lr = learnable_lr[int(n[7])]
+                elif 'predict_dw' in n:
+                    par_lr = learnable_lr[-2]
+                elif 'predict_p' in n:
+                    par_lr = learnable_lr[-1]
+                else:
+                    par_lr = learnable_lr[int(n[7])]
 
-            update_par = par - par_lr*inner_grad[p_ix] if not inner_grad[p_ix] is None else par
+                if inner_grad[p_ix] is None:
+                    print(n,"is None")
+
+                update_par = par - par_lr*inner_grad[p_ix]
+
             fast_weights.append(update_par)
 
         with torch.set_grad_enabled(not val_iter):
