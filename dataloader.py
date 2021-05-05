@@ -54,11 +54,6 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             self.levels = [3,4,5,6,7]
             self.feats = 'activ'
 
-        if FLAGS.ubuntu:
-            self.feat_dir = 'train_feats'
-        else:
-            self.feat_dir = 'train_activ'
-
         self.val_freq = int(FLAGS.val_freq/max(FLAGS.num_workers,1))
         self.num_val_cats = 4*int(FLAGS.num_val_cats/max(FLAGS.num_workers,1))
         self.exp = FLAGS.exp
@@ -117,6 +112,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                         img_trans,_ = self.train_transform(img_load,{'target_size':self.supp_size},(0.8, 1.5))
                     else:
                         img_trans,_ = self.transform(img_load,{'target_size':self.supp_size})
+                        
                     support_img_batch.append(torch.from_numpy(img_trans))
                     img_cat = task_cats.index(cat)
                     supp_cls_lab.append(img_cat)
@@ -192,14 +188,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, task_cats, val_iter
 
 
-def load_metadata_dicts():
-
-    if FLAGS.ubuntu:
-        base_path = "/home/ubuntu/"
-        feat_dir = 'train_feats'
-    else:
-        base_path = '/home-mscluster/dvanniekerk/'
-        feat_dir = 'train_activ'
+def load_metadata_dicts(base_path):
 
     if FLAGS.fpn:
         levels = [3,4,5]

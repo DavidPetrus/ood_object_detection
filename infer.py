@@ -32,18 +32,18 @@ import wandb
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string('exp','','')
-flags.DEFINE_bool('ubuntu',False,'')
+flags.DEFINE_string('base_path','/home/ubuntu/','')
 
 flags.DEFINE_integer('log_freq',50,'')
 flags.DEFINE_integer('num_workers',16,'')
-flags.DEFINE_bool('multi_gpu',True,'')
-flags.DEFINE_integer('num_train_cats',400,'')
+flags.DEFINE_bool('multi_gpu',False,'')
+flags.DEFINE_integer('num_train_cats',350,'')
 flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('val_freq',400,'')
 flags.DEFINE_integer('n_way',1,'')
 flags.DEFINE_integer('num_sup',25,'')
-flags.DEFINE_integer('num_qry',8,'')
-flags.DEFINE_integer('num_zero_images',8,'')
+flags.DEFINE_integer('num_qry',4,'')
+flags.DEFINE_integer('num_zero_images',4,'')
 flags.DEFINE_integer('meta_batch_size',4,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
@@ -196,7 +196,7 @@ def main(argv):
     # create the base model
     model = EfficientDet(h)
     #state_dict = torch.load(load_ckpt)
-    state_dict = torch.load("../checkpoints/"+FLAGS.load_ckpt)
+    state_dict = torch.load("checkpoints/"+FLAGS.load_ckpt)
     if FLAGS.bb != 'b0':
         load_state_dict = {}
         for k,v in state_dict.items():
@@ -229,7 +229,7 @@ def main(argv):
 
     anchors = Anchors.from_config(model_config).to('cuda:1')
 
-    lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts()
+    lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats = load_metadata_dicts(FLAGS.base_path)
     dataset = MetaEpicDataset(model_config,FLAGS.n_way,FLAGS.num_sup,FLAGS.num_qry,lvis_sample,web_sample,lvis_bboxes,lvis_cats,lvis_train_cats,lvis_val_cats)
     loader = torch.utils.data.DataLoader(dataset, batch_size=None, num_workers=FLAGS.num_workers, pin_memory=True)
 
