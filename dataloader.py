@@ -47,13 +47,6 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
         else:
             self.qry_img_size = 256
 
-        if FLAGS.fpn:
-            self.levels = [3,4,5]
-            self.feats = 'feat'
-        else:
-            self.levels = [3,4,5,6,7]
-            self.feats = 'activ'
-
         self.val_freq = int(FLAGS.val_freq/max(FLAGS.num_workers,1))
         self.num_val_cats = 4*int(FLAGS.num_val_cats/max(FLAGS.num_workers,1))
         self.exp = FLAGS.exp
@@ -150,6 +143,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                     cat = random.sample(self.lvis_val_cats,1)[0]
                 else:
                     cat = random.sample(self.lvis_train_cats,1)[0]
+                    
                 if cat in task_cats: continue
 
                 img_path = random.sample(list(self.lvis_sample[cat]),1)[0]
@@ -190,13 +184,6 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
 
 def load_metadata_dicts(base_path):
 
-    if FLAGS.fpn:
-        levels = [3,4,5]
-        feats = 'feat'
-    else:
-        levels = [3,4,5,6,7]
-        feats = 'activ'
-
     if FLAGS.large_qry:
         qry_img_size = 640
     else:
@@ -212,6 +199,7 @@ def load_metadata_dicts(base_path):
         for row in csv_reader:
             if row['name'] in cats_not_to_incl: continue
             lvis_all_cats[row['name']] = int(row['image_count'])
+
     lvis_all_cats = {k: v for k, v in sorted(lvis_all_cats.items(), key=lambda item: item[1])}
     lvis_train_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats:]
     lvis_val_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats-FLAGS.num_val_cats:-FLAGS.num_train_cats]
@@ -224,7 +212,6 @@ def load_metadata_dicts(base_path):
         lvis_cats[splits[0].replace('/home-mscluster/dvanniekerk/',base_path)] = ast.literal_eval(splits[1])
         lvis_bboxes[splits[0].replace('/home-mscluster/dvanniekerk/',base_path)] = ast.literal_eval(splits[2])
 
-
     lvis_sample = {}
     added = 0
     not_added = 0
@@ -232,12 +219,9 @@ def load_metadata_dicts(base_path):
     for line in lines:
         splits = line.split(';')
         if splits[0] not in lvis_train_cats and splits[0] not in lvis_val_cats: continue
-        #if FLAGS.fpn and FLAGS.large_qry:
         cat_imgs = []
         imgs = ast.literal_eval(splits[1])
         for img in set(imgs):
-            #if not os.path.exists(img.replace('train2017','train_activ_640').replace('.jpg','_feat5.npy')):
-            #    continue
             add_to_sample = True
             if splits[0] in lvis_train_cats:
                 set_cats = set(lvis_cats[img.replace('/home-mscluster/dvanniekerk/',base_path)])
@@ -254,8 +238,6 @@ def load_metadata_dicts(base_path):
             cat_imgs.append(img.replace('/home-mscluster/dvanniekerk/',base_path))
 
         lvis_sample[splits[0]] = cat_imgs
-        #else:
-        #    lvis_sample[splits[0]] = ast.literal_eval(splits[1])
     
     web_sample = {}
     for cat in lvis_sample.keys():

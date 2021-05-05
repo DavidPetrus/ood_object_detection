@@ -73,7 +73,6 @@ flags.DEFINE_bool('freeze_fpn_bn',True,'')
 flags.DEFINE_bool('freeze_box_bn',True,'')
 flags.DEFINE_bool('train_bb',False,'')
 flags.DEFINE_bool('train_fpn',False,'')
-flags.DEFINE_bool('fpn',True,'')
 flags.DEFINE_bool('large_qry',True,'')
 flags.DEFINE_bool('train_mode',True,'')
 flags.DEFINE_float('meta_lr',0.001,'')
@@ -105,21 +104,6 @@ def main(argv):
     wandb.config.update(flags.FLAGS)
 
     qry_img_size = 640 if FLAGS.large_qry else 256
-
-    '''def inner_grad_clip(grads):
-        max_norm = 10.
-        total_norm = 0.
-        for t in grads:
-            if t is None: continue
-            #print(t.shape)
-            param_norm = t.norm()**2.
-            total_norm += param_norm
-        total_norm = total_norm ** 0.5
-        print("Supp Norm",total_norm)
-        clip_coef = max_norm / (total_norm + 1e-6)
-        if clip_coef >= 0:
-            return grads
-        return [t if t is None else t.mul(clip_coef) for t in grads]'''
 
     if FLAGS.bb == 'b0': bb_name = 'efficientnet_b0'
     if FLAGS.bb == 'b1': bb_name = 'tf_efficientnet_b1_ns'
@@ -218,7 +202,6 @@ def main(argv):
         support_loss_fn = SupportLoss(model_config, loss_type=FLAGS.loss_type)
     else:
         support_loss_fn = smooth_l1_loss
-
 
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -603,6 +586,23 @@ def main(argv):
             
         return grad_params
     '''
+
+
+    '''def inner_grad_clip(grads):
+        max_norm = 10.
+        total_norm = 0.
+        for t in grads:
+            if t is None: continue
+            #print(t.shape)
+            param_norm = t.norm()**2.
+            total_norm += param_norm
+        total_norm = total_norm ** 0.5
+        print("Supp Norm",total_norm)
+        clip_coef = max_norm / (total_norm + 1e-6)
+        if clip_coef >= 0:
+            return grads
+        return [t if t is None else t.mul(clip_coef) for t in grads]'''
+
 
     '''with higher.innerloop_ctx(model, inner_optimizer, copy_initial_weights=False, track_higher_grads=not val_iter,
             device='cuda', override={'lr': learnable_lr}) as (fast_model, inner_opt):
