@@ -706,7 +706,10 @@ class ProjectionNet(nn.Module):
         cum_sum = torch.cumsum(sorted_confs,dim=0)
         mask = (cum_sum >= conf_sum/2).long()
         median_idxs = torch.argmax(mask, dim=0).view(1,-1)
-        median_embd = torch.gather(sorted_elems,0,median_idxs).detach()
+        if FLAGS.median_grad:
+            median_embd = torch.gather(sorted_elems,0,median_idxs)
+        else:
+            median_embd = torch.gather(sorted_elems,0,median_idxs).detach()
 
         return median_embd, conf_sum
 

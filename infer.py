@@ -50,6 +50,7 @@ flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('use_anchor',False,'')
+flags.DEFINE_bool('median_grad',False,'')
 flags.DEFINE_integer('proj_depth',3,'')
 flags.DEFINE_integer('proj_size',256,'')
 flags.DEFINE_float('dot_mult',6.,'')
@@ -326,7 +327,7 @@ def main(argv):
 
         fast_weights = None
         for s in range(FLAGS.steps):
-            class_out, obj_embds = model([supp_activs], fast_weights=fast_weights, mode='supp_cls')
+            class_out, obj_embds = model(supp_activs, fast_weights=fast_weights, mode='supp_cls')
             if FLAGS.use_anchor:
                 target_mul = anchor_net(obj_embds[FLAGS.at_start*FLAGS.supp_level_offset:])
 
@@ -395,7 +396,7 @@ def main(argv):
                 fast_weights.append(update_par)
 
         with torch.set_grad_enabled(not val_iter):
-            qry_class_out = model([act.to('cuda') for act in qry_activs], fast_weights=fast_weights, mode='qry_cls')
+            qry_class_out = model(qry_activs, fast_weights=fast_weights, mode='qry_cls')
             #qry_box_out = [box_out.to('cuda:1') for box_out in qry_box_out]
             qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
