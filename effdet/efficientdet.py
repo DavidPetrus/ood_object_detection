@@ -851,7 +851,7 @@ class EfficientDet(nn.Module):
                 x_class = self.class_net(x,level_offset=FLAGS.supp_level_offset)
                 return x_class, x
             else:
-                anchor_inps, x_class = self.class_net(x,ret_activs=True,level_offset=FLAGS.supp_level_offset)
+                anchor_inps, x_class = self.class_net(x,fast_weights=fast_weights,ret_activs=True,level_offset=FLAGS.supp_level_offset)
                 return x_class, anchor_inps
         elif mode=='supp_bb':
             x = self.backbone(x)

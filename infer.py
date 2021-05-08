@@ -52,7 +52,7 @@ flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('use_anchor',False,'')
 flags.DEFINE_integer('proj_depth',3,'')
 flags.DEFINE_integer('proj_size',256,'')
-flags.DEFINE_float('dot_mult',5.,'')
+flags.DEFINE_float('dot_mult',6.,'')
 flags.DEFINE_float('dot_add',-3.,'')
 flags.DEFINE_float('median_conf_factor',1.8,'')
 flags.DEFINE_string('norm_factor','2','1,2,inf or None')
@@ -324,73 +324,75 @@ def main(argv):
         with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
             qry_activs, qry_box_out = model(feats,mode='not_cls')
 
-        class_out, obj_embds = model([act.to('cuda') for act in supp_activs], mode='supp_cls')
-        if FLAGS.use_anchor:
-            target_mul = anchor_net(obj_embds[FLAGS.at_start*FLAGS.supp_level_offset:])
+        fast_weights = None
+        for s in range(FLAGS.steps):
+            class_out, obj_embds = model([supp_activs], fast_weights=fast_weights, mode='supp_cls')
+            if FLAGS.use_anchor:
+                target_mul = anchor_net(obj_embds[FLAGS.at_start*FLAGS.supp_level_offset:])
 
-            if not FLAGS.norm_supp:
-                supp_num_positives = torch.tensor(1.)
-            else:
-                supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
-
-            if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
-            supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
-        else:
-            obj_indices = []
-            proj_embds = []
-            confs = []
-            for level_embds,level_conf_ch in zip(obj_embds, class_out):
-                trans_embds = level_embds.movedim(1,3)
-                level_conf = level_conf_ch.movedim(1,3)
-                flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
-                pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
-                rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
-                feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
-
-                #idxs = torch.nonzero(level_conf.view(-1) > FLAGS.conf_thresh)
-                #obj_indices.append(idxs)
-                #conf_embds.append(torch.index_select(feed_embds,0,idxs))
-                confs.append(level_conf.reshape(-1))
-                proj_embds.append(proj_net(feed_embds))
-
-            median_embd,conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor).sigmoid())
-            if FLAGS.norm_factor != 'None':
-                norm_exp = float(FLAGS.norm_factor)
-            else:
-                norm_exp = None
-
-            median_embd = F.normalize(median_embd, p=norm_exp, dim=0) if norm_exp is not None else median_embd
-            supp_losses = []
-            for level_proj,level_conf_ch in zip(proj_embds, class_out):
-                level_conf = level_conf_ch.movedim(1,3)
-                norm_proj = F.normalize(level_proj, p=norm_exp, dim=0) if norm_exp is not None else level_proj
-                dot_prod = torch.matmul(norm_proj, median_embd.t())
-                target = proj_net.dot_mult*dot_prod.view(*level_conf.shape) + proj_net.dot_add
-                supp_losses.append(support_loss_fn(level_conf,target,weights=level_conf.sigmoid()))
-
-            supp_class_loss = sum(supp_losses)/len(supp_losses)
-
-        inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
-
-        fast_weights = []
-        for p_ix,tup in enumerate(model.class_net.named_parameters()):
-            n,par = tup
-            if 'bn_' in n or (FLAGS.only_final and 'predict_p' not in n):
-                update_par = par
-            else:
-                if 'predict_dw' in n:
-                    par_lr = learnable_lr[-2]
-                elif 'predict_p' in n:
-                    par_lr = learnable_lr[-1]
+                if not FLAGS.norm_supp:
+                    supp_num_positives = torch.tensor(1.)
                 else:
-                    par_lr = learnable_lr[int(n[7])]
+                    supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
 
-                if inner_grad[p_ix] is None:
-                    print(n,"is None")
+                if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
+                supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
+            else:
+                obj_indices = []
+                proj_embds = []
+                confs = []
+                for level_embds,level_conf_ch in zip(obj_embds, class_out):
+                    trans_embds = level_embds.movedim(1,3)
+                    level_conf = level_conf_ch.movedim(1,3)
+                    flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
+                    pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
+                    rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
+                    feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                update_par = par - par_lr*inner_grad[p_ix]
+                    #idxs = torch.nonzero(level_conf.view(-1) > FLAGS.conf_thresh)
+                    #obj_indices.append(idxs)
+                    #conf_embds.append(torch.index_select(feed_embds,0,idxs))
+                    confs.append(level_conf.reshape(-1))
+                    proj_embds.append(proj_net(feed_embds))
 
-            fast_weights.append(update_par)
+                median_embd,conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor).sigmoid())
+                if FLAGS.norm_factor != 'None':
+                    norm_exp = float(FLAGS.norm_factor)
+                else:
+                    norm_exp = None
+
+                median_embd = F.normalize(median_embd, p=norm_exp, dim=0) if norm_exp is not None else median_embd
+                supp_losses = []
+                for level_proj,level_conf_ch in zip(proj_embds, class_out):
+                    level_conf = level_conf_ch.movedim(1,3)
+                    norm_proj = F.normalize(level_proj, p=norm_exp, dim=0) if norm_exp is not None else level_proj
+                    dot_prod = torch.matmul(norm_proj, median_embd.t())
+                    target = proj_net.dot_mult*dot_prod.view(*level_conf.shape) + proj_net.dot_add
+                    supp_losses.append(support_loss_fn(level_conf,target,weights=level_conf.sigmoid()))
+
+                supp_class_loss = sum(supp_losses)/len(supp_losses)
+
+            inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
+
+            fast_weights = []
+            for p_ix,tup in enumerate(model.class_net.named_parameters()):
+                n,par = tup
+                if 'bn_' in n or (FLAGS.only_final and 'predict_p' not in n):
+                    update_par = par
+                else:
+                    if 'predict_dw' in n:
+                        par_lr = learnable_lr[-2]
+                    elif 'predict_p' in n:
+                        par_lr = learnable_lr[-1]
+                    else:
+                        par_lr = learnable_lr[int(n[7])]
+
+                    if inner_grad[p_ix] is None:
+                        print(n,"is None")
+
+                    update_par = par - par_lr*inner_grad[p_ix]
+
+                fast_weights.append(update_par)
 
         with torch.set_grad_enabled(not val_iter):
             qry_class_out = model([act.to('cuda') for act in qry_activs], fast_weights=fast_weights, mode='qry_cls')
