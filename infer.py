@@ -24,26 +24,26 @@ from collections import OrderedDict, defaultdict
 from absl import flags
 from absl import app
 
-import higher
+#import higher
 
 import wandb
 
 
 FLAGS = flags.FLAGS
 
-flags.DEFINE_string('exp','','')
+flags.DEFINE_string('exp','test','')
 flags.DEFINE_string('base_path','/home/ubuntu/','')
 
 flags.DEFINE_integer('log_freq',50,'')
-flags.DEFINE_integer('num_workers',16,'')
+flags.DEFINE_integer('num_workers',4,'')
 flags.DEFINE_bool('multi_gpu',False,'')
 flags.DEFINE_integer('num_train_cats',350,'')
 flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('val_freq',400,'')
 flags.DEFINE_integer('n_way',1,'')
 flags.DEFINE_integer('num_sup',25,'')
-flags.DEFINE_integer('num_qry',4,'')
-flags.DEFINE_integer('num_zero_images',4,'')
+flags.DEFINE_integer('num_qry',10,'')
+flags.DEFINE_integer('num_zero_images',10,'')
 flags.DEFINE_integer('meta_batch_size',4,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
@@ -54,6 +54,7 @@ flags.DEFINE_integer('proj_depth',3,'')
 flags.DEFINE_integer('proj_size',256,'')
 flags.DEFINE_float('dot_mult',5.,'')
 flags.DEFINE_float('dot_add',-3.,'')
+flags.DEFINE_float('median_conf_factor',1.8,'')
 flags.DEFINE_string('norm_factor','2','1,2,inf or None')
 flags.DEFINE_bool('multi_inner',True,'')
 flags.DEFINE_bool('norm_supp',True,'')
@@ -165,7 +166,7 @@ def main(argv):
 
     # create the base model
     model = EfficientDet(h)
-    state_dict = torch.load("checkpoints/"+FLAGS.load_ckpt)
+    state_dict = torch.load(FLAGS.base_path+"checkpoints/"+FLAGS.load_ckpt)
     if FLAGS.bb != 'b0':
         load_state_dict = {}
         for k,v in state_dict.items():
@@ -189,7 +190,7 @@ def main(argv):
     if FLAGS.use_anchor:
         anchor_net = AnchorNet(h, at_start=FLAGS.at_start)
     else:
-        proj_net = ProjectionNet(model_config, FLAGS.proj_size).to('cuda')
+        proj_net = ProjectionNet(model_config, FLAGS.proj_size)
 
     anchors = Anchors.from_config(model_config).to('cuda')
 
@@ -215,6 +216,7 @@ def main(argv):
         model.class_net.to('cuda:1')
     else:
         model.to('cuda')
+        proj_net.to('cuda')
     
     def set_bn_train(module):
         if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
@@ -271,8 +273,8 @@ def main(argv):
     evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
-    iter_metrics = {'supp_class_loss': 0., 'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
-    val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
+    iter_metrics = {'supp_class_loss': 0., 'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
+    val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
     t_ix = 0
     train_iter = 0
     log_count = 0
@@ -334,41 +336,35 @@ def main(argv):
             if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
             supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
         else:
-            conf_embds = []
             obj_indices = []
             proj_embds = []
             confs = []
-            for level_embds,level_conf in zip(obj_embds, class_out):
-                # ENSURE CHANNELS LAST!!
-                print(level_embds.shape)
-                flat_embds = level_embds.view(-1, model_config.fpn_channels)
+            for level_embds,level_conf_ch in zip(obj_embds, class_out):
+                trans_embds = level_embds.movedim(1,3)
+                level_conf = level_conf_ch.movedim(1,3)
+                flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
                 pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
                 rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
-                print(pos_enc)
                 feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
-                print(feed_embds.shape)
 
                 #idxs = torch.nonzero(level_conf.view(-1) > FLAGS.conf_thresh)
                 #obj_indices.append(idxs)
                 #conf_embds.append(torch.index_select(feed_embds,0,idxs))
-                print(level_conf.shape)
-                confs.append(level_conf.view(-1))
-                conf_embds.append(feed_embds)
-                proj_embds.append(proj_net(conf_embds[-1]))
+                confs.append(level_conf.reshape(-1))
+                proj_embds.append(proj_net(feed_embds))
 
-            median_embd = proj_net.weighted_median(torch.cat(proj_embds,dim=0), torch.cat(confs))
+            median_embd,conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor).sigmoid())
             if FLAGS.norm_factor != 'None':
                 norm_exp = float(FLAGS.norm_factor)
             else:
                 norm_exp = None
 
-            print(median_embd.shape)
             median_embd = F.normalize(median_embd, p=norm_exp, dim=0) if norm_exp is not None else median_embd
             supp_losses = []
-            for level_proj,level_conf in zip(proj_embds, class_out):
+            for level_proj,level_conf_ch in zip(proj_embds, class_out):
+                level_conf = level_conf_ch.movedim(1,3)
                 norm_proj = F.normalize(level_proj, p=norm_exp, dim=0) if norm_exp is not None else level_proj
-                dot_prod = torch.dot(norm_proj, median_embd)
-                print(dot_prod.shape)
+                dot_prod = torch.matmul(norm_proj, median_embd.t())
                 target = proj_net.dot_mult*dot_prod.view(*level_conf.shape) + proj_net.dot_add
                 supp_losses.append(support_loss_fn(level_conf,target,weights=level_conf.sigmoid()))
 
@@ -382,7 +378,7 @@ def main(argv):
             if 'bn_' in n or (FLAGS.only_final and 'predict_p' not in n):
                 update_par = par
             else:
-                elif 'predict_dw' in n:
+                if 'predict_dw' in n:
                     par_lr = learnable_lr[-2]
                 elif 'predict_p' in n:
                     par_lr = learnable_lr[-1]
@@ -423,6 +419,7 @@ def main(argv):
                 iter_metrics['qry_bbox_loss'] += qry_box_loss
                 iter_metrics['mAP'] += map_metrics['Precision/mAP@0.5IOU']
                 iter_metrics['CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
+                iter_metrics['conf_sum'] += conf_sum
                 for metric_key in list(map_metrics.keys())[2:]:
                     category_metrics[metric_key].append(map_metrics[metric_key])
                 log_count += 1
@@ -433,6 +430,7 @@ def main(argv):
                 val_metrics['val_qry_bbox_loss'] += qry_box_loss
                 val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
                 val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
+                val_metrics['val_conf_sum'] += conf_sum
                 for metric_key in list(map_metrics.keys())[2:]:
                     category_metrics['val'+metric_key].append(map_metrics[metric_key])
                 val_count += 1
@@ -471,6 +469,7 @@ def main(argv):
             
             for met_key in val_metrics.keys():
                 log_metrics[met_key] = val_metrics[met_key]/val_count
+
             wandb.log(log_metrics)
             print("Validation Iteration {}:".format(train_iter),log_metrics)
 
@@ -480,13 +479,14 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
-            val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0.}
+            val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
             val_count = 0
             log_val = False
         elif not val_iter and (log_count >= FLAGS.log_freq):
             log_metrics = {'iteration':train_iter}
             for met_key in iter_metrics.keys():
                 log_metrics[met_key] = iter_metrics[met_key]/log_count
+
             log_metrics['meta_norm'] = meta_norm/(log_count/FLAGS.meta_batch_size)
             meta_norm = 0.
             wandb.log(log_metrics)
@@ -498,7 +498,7 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
-            iter_metrics = {'supp_class_loss': 0.,'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0.}
+            iter_metrics = {'supp_class_loss': 0.,'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
             log_count = 0
 
             #except Exception as e:

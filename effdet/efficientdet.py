@@ -686,14 +686,13 @@ class ProjectionNet(nn.Module):
         self.dot_add = nn.Parameter(torch.tensor(FLAGS.dot_add))
 
         locs = torch.arange(start=-1.,end=1.,step=1/8)*3.14159
-        locs = locs[:config.num_anchors]
+        locs = locs[:9]
         pos_enc = []
         for freq in range(4):
             pos_enc.append(torch.sin(2**freq * locs))
             pos_enc.append(torch.cos(2**freq * locs))
 
-        self.pos_enc = torch.stack(pos_enc).transpose(0,1)
-        print(self.pos_enc.shape)
+        self.pos_enc = torch.stack(pos_enc).transpose(0,1).cuda()
 
         self.width = width
         self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8, width), nn.ReLU(),
@@ -707,9 +706,9 @@ class ProjectionNet(nn.Module):
         cum_sum = torch.cumsum(sorted_confs,dim=0)
         mask = (cum_sum >= conf_sum/2).long()
         median_idxs = torch.argmax(mask, dim=0).view(1,-1)
-        median_embd = torch.gather(sorted_elems,0,median_idxs)
+        median_embd = torch.gather(sorted_elems,0,median_idxs).detach()
 
-        return median_embd
+        return median_embd, conf_sum
 
 
     def forward(self, x):

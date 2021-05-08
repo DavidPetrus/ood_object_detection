@@ -48,7 +48,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             self.qry_img_size = 256
 
         self.val_freq = int(FLAGS.val_freq/max(FLAGS.num_workers,1))
-        self.num_val_cats = 4*int(FLAGS.num_val_cats/max(FLAGS.num_workers,1))
+        self.num_val_cats = 2*int(FLAGS.num_val_cats/max(FLAGS.num_workers,1))
         self.exp = FLAGS.exp
         self.n_way = FLAGS.n_way
         self.num_workers = FLAGS.num_workers
@@ -94,7 +94,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             else:
                 task_cats = random.sample(self.lvis_train_cats,self.n_way)
 
-            print("Val:",val_iter,task_cats,i,val_count)
+            #print("Val:",val_iter,task_cats,i,val_count)
             #try:
             for cat_ix,cat in enumerate(task_cats):
                 support_imgs = random.sample(list(self.web_sample[cat]),self.num_sup)
@@ -143,7 +143,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                     cat = random.sample(self.lvis_val_cats,1)[0]
                 else:
                     cat = random.sample(self.lvis_train_cats,1)[0]
-                    
+
                 if cat in task_cats: continue
 
                 img_path = random.sample(list(self.lvis_sample[cat]),1)[0]
@@ -159,12 +159,6 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                 qry_cls_ls.append(torch.from_numpy(np.array([]).astype(np.int64)))
 
                 z_ix += 1
-
-            #except Exception as e:
-            #    with open(self.exp+'dataloader.txt','a') as fp:
-            #        fp.write(str(e))
-            #    print("!!!!!!!!!!!!!!!!!!!!!!!",e)
-            #    continue
 
             supp_tup = list(zip(support_img_batch,supp_cls_lab))
             random.shuffle(supp_tup)
@@ -202,7 +196,7 @@ def load_metadata_dicts(base_path):
 
     lvis_all_cats = {k: v for k, v in sorted(lvis_all_cats.items(), key=lambda item: item[1])}
     lvis_train_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats:]
-    lvis_val_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats-FLAGS.num_val_cats:-FLAGS.num_train_cats]
+    lvis_val_cats = list(lvis_all_cats.keys())[-FLAGS.num_train_cats-FLAGS.num_val_cats-len(cats_not_to_incl):-FLAGS.num_train_cats-len(cats_not_to_incl)]
 
     lvis_cats = {}
     lvis_bboxes = {}
