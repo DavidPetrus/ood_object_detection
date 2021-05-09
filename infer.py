@@ -55,6 +55,7 @@ flags.DEFINE_float('beta',1/9,'')
 flags.DEFINE_float('conf_reg',0.,'')
 flags.DEFINE_integer('proj_depth',3,'')
 flags.DEFINE_integer('proj_size',256,'')
+flags.DEFINE_bool('proj_stop_grad',True,'')
 flags.DEFINE_float('dot_mult',8.,'')
 flags.DEFINE_float('dot_add',-3.,'')
 flags.DEFINE_float('median_conf_factor',1.8,'')
@@ -359,7 +360,10 @@ def main(argv):
                     #obj_indices.append(idxs)
                     #conf_embds.append(torch.index_select(feed_embds,0,idxs))
                     confs.append(level_conf.reshape(-1))
-                    proj_embds.append(proj_net(feed_embds))
+                    if FLAGS.proj_stop_grad:
+                        proj_embds.append(proj_net(feed_embds.detach()))
+                    else:
+                        proj_embds.append(proj_net(feed_embds))
 
                 median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor + FLAGS.median_conf_add).sigmoid())
                 if FLAGS.norm_factor != 'None':
