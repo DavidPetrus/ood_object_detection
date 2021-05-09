@@ -275,9 +275,10 @@ def main(argv):
     evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
-    iter_metrics = {'supp_class_loss': 0.,'conf_reg':0., 'supp_pos':0.,'supp_neg':0., 'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
-    val_metrics = {'val_supp_class_loss': 0.,'val_conf_reg':0., 'val_supp_pos':0.,'val_supp_neg':0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 
-        'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
+    iter_metrics = {'supp_class_loss': 0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
+                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
+    val_metrics = {'val_supp_class_loss': 0., 'val_conf_reg':0., 'val_med_conf_sum':0., 'val_supp_pos':0.,'val_supp_neg':0., 
+                'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
     t_ix = 0
     train_iter = 0
     log_count = 0
@@ -358,7 +359,7 @@ def main(argv):
                     confs.append(level_conf.reshape(-1))
                     proj_embds.append(proj_net(feed_embds))
 
-                median_embd,conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor).sigmoid())
+                median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor).sigmoid())
                 if FLAGS.norm_factor != 'None':
                     norm_exp = float(FLAGS.norm_factor)
                 else:
@@ -382,6 +383,7 @@ def main(argv):
                     conf_reg += ((level_conf[level_conf > 4.] - 4.)**2).sum()
 
                 supp_class_loss = sum(supp_losses)/confs_sum
+                conf_reg /= confs_sum
                 supp_pos = sum(pos_sums)
                 supp_neg = sum(neg_sums)
 
@@ -412,8 +414,8 @@ def main(argv):
             #qry_box_out = [box_out.to('cuda:1') for box_out in qry_box_out]
             qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
+        final_loss = qry_loss + FLAGS.conf_reg*conf_reg
         if not val_iter:
-            final_loss = qry_loss + FLAGS.conf_reg*conf_reg
             final_loss.backward()
 
         with torch.no_grad():
@@ -433,12 +435,13 @@ def main(argv):
                 iter_metrics['supp_pos'] += supp_pos
                 iter_metrics['supp_neg'] += supp_neg
                 iter_metrics['conf_reg'] += conf_reg
-                iter_metrics['qry_loss'] += qry_loss
+                iter_metrics['qry_loss'] += final_loss
                 iter_metrics['qry_class_loss'] += qry_class_loss
                 iter_metrics['qry_bbox_loss'] += qry_box_loss
                 iter_metrics['mAP'] += map_metrics['Precision/mAP@0.5IOU']
                 iter_metrics['CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
-                iter_metrics['conf_sum'] += conf_sum
+                iter_metrics['conf_sum'] += confs_sum
+                iter_metrics['med_conf_sum'] += med_conf_sum
                 for metric_key in list(map_metrics.keys())[2:]:
                     category_metrics[metric_key].append(map_metrics[metric_key])
                 log_count += 1
@@ -447,12 +450,13 @@ def main(argv):
                 val_metrics['val_supp_pos'] += supp_pos
                 val_metrics['val_supp_neg'] += supp_neg
                 val_metrics['val_conf_reg'] += conf_reg
-                val_metrics['val_qry_loss'] += qry_loss
+                val_metrics['val_qry_loss'] += final_loss
                 val_metrics['val_qry_class_loss'] += qry_class_loss
                 val_metrics['val_qry_bbox_loss'] += qry_box_loss
                 val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
                 val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
-                val_metrics['val_conf_sum'] += conf_sum
+                val_metrics['val_conf_sum'] += confs_sum
+                val_metrics['val_med_conf_sum'] += med_conf_sum
                 for metric_key in list(map_metrics.keys())[2:]:
                     category_metrics['val'+metric_key].append(map_metrics[metric_key])
                 val_count += 1
@@ -501,7 +505,8 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
-            val_metrics = {'val_supp_class_loss': 0., 'val_conf_reg':0., val_supp_pos':0.,'val_supp_neg':0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
+            val_metrics = {'val_supp_class_loss': 0., 'val_conf_reg':0., 'val_med_conf_sum':0., 'val_supp_pos':0.,'val_supp_neg':0., 
+                'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
             val_count = 0
             log_val = False
         elif not val_iter and (log_count >= FLAGS.log_freq):
@@ -520,7 +525,8 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
-            iter_metrics = {'supp_class_loss': 0.,'conf_reg':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
+            iter_metrics = {'supp_class_loss': 0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
+                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
             log_count = 0
 
             #except Exception as e:
