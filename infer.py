@@ -42,8 +42,8 @@ flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('val_freq',400,'')
 flags.DEFINE_integer('n_way',1,'')
 flags.DEFINE_integer('num_sup',25,'')
-flags.DEFINE_integer('num_qry',10,'')
-flags.DEFINE_integer('num_zero_images',10,'')
+flags.DEFINE_integer('num_qry',8,'')
+flags.DEFINE_integer('num_zero_images',8,'')
 flags.DEFINE_integer('meta_batch_size',4,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
@@ -51,6 +51,7 @@ flags.DEFINE_integer('pretrain_classes',400,'')
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('use_anchor',False,'')
 flags.DEFINE_bool('median_grad',False,'')
+flags.DEFINE_float('conf_reg',0.,'')
 flags.DEFINE_integer('proj_depth',3,'')
 flags.DEFINE_integer('proj_size',256,'')
 flags.DEFINE_float('dot_mult',6.,'')
@@ -274,8 +275,9 @@ def main(argv):
     evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
-    iter_metrics = {'supp_class_loss': 0., 'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
-    val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
+    iter_metrics = {'supp_class_loss': 0., 'supp_pos':0.,'supp_neg':0., 'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
+    val_metrics = {'val_supp_class_loss': 0., 'val_supp_pos':0.,'val_supp_neg':0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 
+        'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
     t_ix = 0
     train_iter = 0
     log_count = 0
@@ -285,11 +287,11 @@ def main(argv):
     meta_norm = 0.
     #with torch.autograd.detect_anomaly():
     for task in loader:
-        if t_ix == 0: meta_optimizer.zero_grad()
+        supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
+
+        if t_ix == 0 or val_iter: meta_optimizer.zero_grad()
 
         evaluator.clear()
-        
-        supp_imgs, supp_cls_labs, qry_imgs, qry_labs, task_cats, val_iter = task
 
         supp_cls_labs = supp_cls_labs.to('cuda')
         qry_cls_anchors = [cls_anchor.to('cuda') for cls_anchor in qry_labs['cls_anchor']]
@@ -363,15 +365,27 @@ def main(argv):
                     norm_exp = None
 
                 median_embd = F.normalize(median_embd, p=norm_exp, dim=0) if norm_exp is not None else median_embd
-                supp_losses = []
+                supp_losses,pos_sums,neg_sums = [],[],[]
+                confs_sum = 0.
+                conf_reg = 0.
                 for level_proj,level_conf_ch in zip(proj_embds, class_out):
                     level_conf = level_conf_ch.movedim(1,3)
                     norm_proj = F.normalize(level_proj, p=norm_exp, dim=0) if norm_exp is not None else level_proj
                     dot_prod = torch.matmul(norm_proj, median_embd.t())
                     target = proj_net.dot_mult*dot_prod.view(*level_conf.shape) + proj_net.dot_add
-                    supp_losses.append(support_loss_fn(level_conf,target,weights=level_conf.sigmoid()))
+                    conf_probs = level_conf.sigmoid()
+                    supp_loss, pos_grad_sum, neg_grad_sum = support_loss_fn(level_conf,target,weights=conf_probs)
+                    confs_sum += conf_probs.sum()
+                    supp_losses.append(supp_loss)
+                    pos_sums.append(pos_grad_sum)
+                    neg_sums.append(neg_grad_sum)
+                    conf_reg += ((level_conf[level_conf > 4.] - 4.)**2).sum()
 
-                supp_class_loss = sum(supp_losses)/len(supp_losses)
+                print(conf_reg)
+
+                supp_class_loss = sum(supp_losses)/confs_sum
+                supp_pos = sum(pos_sums)
+                supp_neg = sum(neg_sums)
 
             inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
 
@@ -401,7 +415,8 @@ def main(argv):
             qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
         if not val_iter:
-            qry_loss.backward()
+            final_loss = qry_loss + FLAGS.conf_reg*conf_reg
+            final_loss.backward()
 
         with torch.no_grad():
             class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
@@ -417,6 +432,8 @@ def main(argv):
             map_metrics = evaluator.evaluate(task_cats)
             if not val_iter:
                 iter_metrics['supp_class_loss'] += supp_class_loss
+                iter_metrics['supp_pos'] += supp_pos
+                iter_metrics['supp_neg'] += supp_neg
                 iter_metrics['qry_loss'] += qry_loss
                 iter_metrics['qry_class_loss'] += qry_class_loss
                 iter_metrics['qry_bbox_loss'] += qry_box_loss
@@ -428,6 +445,8 @@ def main(argv):
                 log_count += 1
             else:
                 val_metrics['val_supp_class_loss'] += supp_class_loss
+                val_metrics['val_supp_pos'] += supp_pos
+                val_metrics['val_supp_neg'] += supp_neg
                 val_metrics['val_qry_loss'] += qry_loss
                 val_metrics['val_qry_class_loss'] += qry_class_loss
                 val_metrics['val_qry_bbox_loss'] += qry_box_loss
@@ -482,7 +501,7 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
-            val_metrics = {'val_supp_class_loss': 0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
+            val_metrics = {'val_supp_class_loss': 0.,'val_supp_pos':0.,'val_supp_neg':0., 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
             val_count = 0
             log_val = False
         elif not val_iter and (log_count >= FLAGS.log_freq):
@@ -501,7 +520,7 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
-            iter_metrics = {'supp_class_loss': 0.,'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
+            iter_metrics = {'supp_class_loss': 0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
             log_count = 0
 
             #except Exception as e:

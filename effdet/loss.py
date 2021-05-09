@@ -113,7 +113,7 @@ def huber_loss(
 
 
 def smooth_l1_loss(
-        input, target, beta: float = 1. / 9, weights: Optional[torch.Tensor] = None, size_average: bool = True):
+        input, target, beta: float = 1. / 9, weights: Optional[torch.Tensor] = None, size_average: bool = False):
     """
     very similar to the smooth_l1_loss from pytorch, but with the extra beta parameter
     """
@@ -125,14 +125,27 @@ def smooth_l1_loss(
         # small values of beta to be exactly l1 loss.
         loss = torch.abs(input - target)
     else:
-        err = torch.abs(input - target)
-        loss = torch.where(err < beta, 0.5 * err.pow(2) / beta, err - 0.5 * beta)
+        err = input - target
+        abs_err = torch.abs(err)
+        '''sort,_ = torch.sort(abs_err.reshape(-1))
+        print(sort[:10],sort[20],sort[50],sort[100],sort[800])
+        conf_err = torch.where(weights > beta, abs_err, torch.tensor(10000.,dtype=torch.float32, device='cuda'))
+        print(conf_err[conf_err != 1000.].mean(),conf_err[conf_err != 1000.].max())
+        sort_conf,_ = torch.sort(conf_err.reshape(-1))
+        print(sort_conf[:10],sort_conf[20],sort_conf[50],sort_conf[100],sort_conf[800])'''
+        loss = torch.where(abs_err < beta, 0.5 * abs_err.pow(2) / beta, abs_err - 0.5 * beta)
+
+
     if weights is not None:
         loss *= weights
+        weighted_sign = torch.sign(err)*weights
+        pos_grad_sum = weighted_sign[weighted_sign > 0.].sum()
+        neg_grad_sum = weighted_sign[weighted_sign < 0.].sum()
+
     if size_average:
         return loss.mean()
     else:
-        return loss.sum()
+        return loss.sum(), pos_grad_sum, neg_grad_sum
 
 
 def _box_loss(box_outputs, box_targets, num_positives, delta: float = 0.1):
