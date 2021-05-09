@@ -57,6 +57,7 @@ flags.DEFINE_integer('proj_size',256,'')
 flags.DEFINE_float('dot_mult',6.,'')
 flags.DEFINE_float('dot_add',-3.,'')
 flags.DEFINE_float('median_conf_factor',1.8,'')
+flags.DEFINE_float('median_conf_add',0.,'')
 flags.DEFINE_string('norm_factor','2','1,2,inf or None')
 flags.DEFINE_bool('multi_inner',True,'')
 flags.DEFINE_bool('norm_supp',True,'')
@@ -359,7 +360,7 @@ def main(argv):
                     confs.append(level_conf.reshape(-1))
                     proj_embds.append(proj_net(feed_embds))
 
-                median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor).sigmoid())
+                median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor + FLAGS.median_conf_add).sigmoid())
                 if FLAGS.norm_factor != 'None':
                     norm_exp = float(FLAGS.norm_factor)
                 else:
