@@ -89,10 +89,14 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             supp_cls_lab = []
             qry_bbox_ls = []
             qry_cls_ls = []
+            proj_bbox_ls = []
+            proj_cls_ls = []
             if val_iter:
                 task_cats = random.sample(self.lvis_val_cats,self.n_way)
+                cat_ls = self.lvis_val_cats
             else:
                 task_cats = random.sample(self.lvis_train_cats,self.n_way)
+                cat_ls = self.lvis_train_cats
 
             #print("Val:",val_iter,task_cats,i,val_count)
             #try:
@@ -114,28 +118,49 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
 
                 for img_path in query_imgs:
                     cat_idxs = []
+                    proj_idxs = []
+                    img_cat_ids = []
                     for lv_ix,lv_cat in enumerate(self.lvis_cats[img_path]):
-                        if lv_cat in task_cats: cat_idxs.append(lv_ix)
+                        if lv_cat in cat_ls:
+                            img_cat_ids.append(cat_ls.index(lv_cat))
+                            proj_idxs.append(lv_ix)
 
-                    img_bboxes = np.asarray(self.lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
+                    for lv_ix,lv_cat in enumerate(img_cat_ids):
+                        if cat_ls[lv_cat] in task_cats: 
+                            cat_idxs.append(lv_ix)
+
+                    img_cat_ids = np.array(img_cat_ids)
+
+                    #img_bboxes = np.asarray(self.lvis_bboxes[img_path])[cat_idxs].astype(np.float32)
+                    img_bboxes = np.asarray(self.lvis_bboxes[img_path])[proj_idxs].astype(np.float32)
                     img_bboxes[:,2:] = img_bboxes[:,:2]+img_bboxes[:,2:]
                     img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
                     
-                    img_cats = np.asarray(self.lvis_cats[img_path])[cat_idxs]
-                    img_cat_ids = []
-                    for a_ix in range(len(img_cats)): img_cat_ids.append(task_cats.index(img_cats[a_ix]))
-                    img_cat_ids = np.array(img_cat_ids)
-
+                    #img_cats = np.asarray(self.lvis_cats[img_path])[cat_idxs]
                     target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
                     img_load = Image.open(img_path).convert('RGB')
                     if not val_iter:
                         img_trans,target = self.train_transform(img_load,target,(0.4,1.7))
+                        if len(target['bbox']) < len(proj_idxs):
+                            new_cat_idxs = []
+                            ix_delta = 0
+                            for v_ix,val in enumerate(target['valid_indices']):
+                                if val:
+                                    if v_ix in cat_idxs:
+                                        new_cat_idxs.append(v_ix-ix_delta)
+                                else:
+                                    ix_delta += 1
+
+                            cat_idxs = new_cat_idxs
                     else:
                         img_trans,target = self.transform(img_load,target)
 
                     query_img_batch.append(torch.from_numpy(img_trans))
-                    qry_bbox_ls.append(torch.from_numpy(target['bbox']))
-                    qry_cls_ls.append(torch.from_numpy(target['cls']+1))
+                    qry_bbox_ls.append(torch.from_numpy(target['bbox'][cat_idxs]))
+                    qry_cls_ls.append(torch.from_numpy(np.ones(len(cat_idxs),dtype=target['cls'].dtype)))
+
+                    proj_bbox_ls.append(torch.from_numpy(target['bbox']))
+                    proj_cls_ls.append(torch.from_numpy(target['cls']+1))
 
             z_ix = 0
             while z_ix < self.num_zero:
@@ -165,15 +190,18 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             support_img_batch,supp_cls_lab = zip(*supp_tup)
             supp_cls_lab = F.one_hot(torch.LongTensor(supp_cls_lab),num_classes=self.n_way)
 
-            qry_tup = list(zip(query_img_batch,qry_bbox_ls,qry_cls_ls))
-            random.shuffle(qry_tup)
-            query_img_batch,qry_bbox_ls,qry_cls_ls = zip(*qry_tup)
+            #qry_tup = list(zip(query_img_batch,qry_bbox_ls,qry_cls_ls))
+            #random.shuffle(qry_tup)
+            #query_img_batch,qry_bbox_ls,qry_cls_ls = zip(*qry_tup)
 
             q_cls_targets, q_box_targets, q_num_positives = self.anchor_labeler.batch_label_anchors(qry_bbox_ls, qry_cls_ls)
             query_lab_batch = {'cls':qry_cls_ls, 'bbox': qry_bbox_ls, 'cls_anchor':q_cls_targets, 'bbox_anchor':q_box_targets, 'num_positives':q_num_positives}
 
+            p_cls_targets, p_box_targets, p_num_positives = self.anchor_labeler.batch_label_anchors(proj_bbox_ls, proj_cls_ls)
+            proj_lab_batch = {'cls':proj_cls_ls, 'bbox': proj_bbox_ls, 'cls_anchor':p_cls_targets, 'bbox_anchor':p_box_targets, 'num_positives':p_num_positives}
+
             #yield list(map(torch.stack, zip(*support_img_batch))), supp_cls_lab, list(map(torch.stack, zip(*query_img_batch))), query_lab_batch, task_cats, val_iter
-            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, task_cats, val_iter
+            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, proj_lab_batch, task_cats, val_iter
 
 
 def load_metadata_dicts(base_path):
