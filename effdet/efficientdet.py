@@ -710,6 +710,9 @@ class ProjectionNet(nn.Module):
             median_embd = torch.gather(sorted_elems,0,median_idxs)
         else:
             median_embd = torch.gather(sorted_elems,0,median_idxs).detach()
+            print('---------------------')
+            print(median_embd)
+            print(sorted_elems[torch.arange(0,median_idxs.shape[1],device='cuda'), median_idxs[0]])
 
         return median_embd, conf_sum
 
@@ -848,7 +851,7 @@ class EfficientDet(nn.Module):
         self.class_net.toggle_bn_level_first()
         self.box_net.toggle_bn_level_first()
 
-    def forward(self, x, fast_weights=None, mode='full_net'):
+    def forward(self, x, fast_weights=None, ret_activs=False, mode='full_net'):
         if mode=='supp_cls':
             if FLAGS.at_start:
                 x_class = self.class_net(x,level_offset=FLAGS.supp_level_offset)
@@ -868,7 +871,7 @@ class EfficientDet(nn.Module):
             x_box = self.box_net([activ.to('cuda') for activ in activs])
             return activs, x_box
         elif mode=='qry_cls':
-            x_class = self.class_net(x,fast_weights=fast_weights)
+            x_class = self.class_net(x,fast_weights=fast_weights, ret_activs=ret_activs)
             return x_class
         elif mode=='full_net':
             x = self.backbone(x)
