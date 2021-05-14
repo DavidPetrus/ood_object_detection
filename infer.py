@@ -52,16 +52,18 @@ flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('use_anchor',False,'')
 flags.DEFINE_bool('median_grad',False,'')
 flags.DEFINE_float('meta_clip',10.,'')
-flags.DEFINE_float('beta',1/9,'')
-flags.DEFINE_float('conf_reg',1.,'')
+flags.DEFINE_float('sim_thresh',0.2,'')
+flags.DEFINE_float('sim_weight',1.,'')
+flags.DEFINE_float('beta',1/20,'')
+flags.DEFINE_float('conf_reg',0.,'')
 flags.DEFINE_integer('proj_depth',3,'')
 flags.DEFINE_integer('proj_size',256,'')
-flags.DEFINE_bool('proj_stop_grad',True,'')
+flags.DEFINE_bool('proj_stop_grad',False,'')
 flags.DEFINE_float('proj_reg',0.1,'')
 flags.DEFINE_bool('proj_conf_weigh',True,'')
 flags.DEFINE_float('dot_mult',8.,'')
 flags.DEFINE_float('dot_add',-3.,'')
-flags.DEFINE_float('median_conf_factor',1.5,'')
+flags.DEFINE_float('median_conf_factor',1.,'')
 flags.DEFINE_float('median_conf_add',0.,'')
 flags.DEFINE_string('norm_factor','2','1,2,inf or None')
 flags.DEFINE_bool('multi_inner',True,'')
@@ -282,7 +284,7 @@ def main(argv):
     category_metrics = defaultdict(list)
 
     iter_metrics = {'supp_class_loss': 0., 'proj_loss':0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
-                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
+                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0., 'num_valid':0., 'min_clust':0.}
     val_metrics = {'val_supp_class_loss': 0., 'val_proj_loss':0., 'val_conf_reg':0., 'val_med_conf_sum':0., 'val_supp_pos':0.,'val_supp_neg':0., 
                 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
     t_ix = 0
@@ -341,14 +343,13 @@ def main(argv):
         if not val_iter and FLAGS.proj_reg>0.:
             with torch.set_grad_enabled(not FLAGS.proj_stop_grad):
                 # Maybe only do top 3 levels?
-                class_out, obj_embds = model(qry_activs, mode='qry_cls', ret_activs=True)
+                class_out, obj_embds = model([qry_lev[:FLAGS.num_qry] for qry_lev in qry_activs], mode='qry_cls', ret_activs=True)
 
             proj_feed = []
             confs = []
             proj_labs = []
-            for level_embds,level_conf_ch, labs in zip(obj_embds, class_out, proj_cls_anchors):
+            for level_embds,level_conf, labs in zip(obj_embds, class_out, proj_cls_anchors):
                 trans_embds = level_embds.movedim(1,3)
-                level_conf = level_conf_ch.movedim(1,3)
                 flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
                 pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
                 rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
@@ -364,17 +365,17 @@ def main(argv):
             obj_idxs = proj_labs != -1
             shuffled_idxs = torch.randperm(obj_idxs.sum())
             proj_embds = proj_net(proj_feed[obj_idxs][shuffled_idxs])
-            proj_embds = F.normalize(proj_embds, norm=2)
+            proj_embds = F.normalize(proj_embds, p=2)
             proj_labs = proj_labs[obj_idxs][shuffled_idxs]
             confs = confs[obj_idxs][shuffled_idxs].sigmoid()
             sim_mat = torch.matmul(proj_embds, proj_embds.t()) / 0.2
 
             mask = proj_labs.view(-1,1) == proj_labs.view(1,-1)
             triu_mask = torch.triu(mask, diagonal=1)
-            pair_idxs = torch.argmax(triu_mask, dim=1)
-            pair_idxs[pair_idxs==0] = torch.argmax(mask[pair_idxs==0], dim=1)
+            pair_idxs = torch.argmax(triu_mask.long(), dim=1)
+            pair_idxs[pair_idxs==0] = torch.argmax(mask[pair_idxs==0].long(), dim=1)
 
-            pair_logits = torch.where(mask, -10000., sim_mat)
+            pair_logits = torch.where(mask, torch.tensor(-10000.,dtype=torch.float32, device='cuda'), sim_mat)
             pair_logits[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs] = sim_mat[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs]
             proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
             if FLAGS.proj_conf_weigh: 
@@ -405,24 +406,58 @@ def main(argv):
                 obj_indices = []
                 proj_embds = []
                 confs = []
-                for level_embds,level_conf_ch in zip(obj_embds, class_out):
+                for level_embds,level_conf in zip(obj_embds, class_out):
                     trans_embds = level_embds.movedim(1,3)
-                    level_conf = level_conf_ch.movedim(1,3)
                     flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
                     pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
                     rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
                     feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                    #idxs = torch.nonzero(level_conf.view(-1) > FLAGS.conf_thresh)
-                    #obj_indices.append(idxs)
-                    #conf_embds.append(torch.index_select(feed_embds,0,idxs))
                     confs.append(level_conf.reshape(-1))
                     if FLAGS.proj_stop_grad:
-                        proj_embds.append(proj_net(feed_embds.detach()))
+                        proj_preds = proj_net(feed_embds.detach())
                     else:
-                        proj_embds.append(proj_net(feed_embds))
+                        proj_preds = proj_net(feed_embds)
 
-                median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor + FLAGS.median_conf_add).sigmoid())
+                    proj_preds = proj_preds.view(num_anchs,FLAGS.sup_size,-1,proj_preds.shape[-1]).movedim(0,1).view(-1,proj_preds.shape[-1])
+                    proj_embds.append(proj_preds)
+
+                proj_embds = torch.cat(proj_embds, dim=0)
+                proj_embds = F.normalize(proj_embds, p=2)
+                sim_mat = torch.matmul(proj_embds, proj_embds.t())
+                conf_logits = torch.cat(confs, dim=0)
+                conf_probs = conf_logits.sigmoid()
+                conf_mat = torch.matmul(conf_probs.view(-1,1),conf_probs.view(1,-1))
+                weighted_sim = conf_mat*sim_mat# - 1000.*torch.eye(sim_mat.shape[0], device='cuda')
+                weighted_sim = weighted_sim.view(FLAGS.num_sup, -1, sim_mat.shape[0])
+
+                img_avg_sims_all = weighted_sim.sum(2)
+                img_max_sims,max_idxs = torch.max(img_avg_sims_all,dim=1)
+                max_idxs = torch.arange(0, FLAGS.num_sup*sim_mat.shape[0], FLAGS.num_sup, device='cuda') + max_idxs
+                init_cluster = sim_mat[max_idxs][:,max_idxs]
+                avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
+                valid = avg_init > FLAGS.sim_thresh
+                print(valid.sum())
+
+                img_avg_sims_clust = weighted_sim[:,:,max_idxs[valid]].sum(2)
+                img_max_sims,max_idxs = torch.max(img_avg_sims_clust, dim=1)
+                max_idxs = torch.arange(0, FLAGS.num_sup*sim_mat.shape[0], FLAGS.num_sup, device='cuda') + max_idxs
+                print(img_max_sims.min())
+
+                all_max_sims_clust = sim_mat[:,max_idxs].max(1)
+                cluster_idxs = all_max_sims_clust > FLAGS.sim_thresh
+                
+                detach_confs = conf_logits.detach()
+                target_sims = all_max_sims_clust
+                target_sims[max_idxs] = img_max_sims
+                print(target_sims[cluster_idxs].max(), target_sims[cluster_idxs].min())
+                print(target_sims[not cluster_idxs].max(), target_sims[not cluster_idxs].min())
+                target = torch.where(cluster_idxs, detach_confs+target_sims, detach_confs+target_sims-1)
+                supp_class_loss, supp_pos, supp_neg = support_loss_fn(conf_logits, target, weights=conf_probs, beta=FLAGS.beta)
+                conf_reg = 0.
+
+
+                '''median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor + FLAGS.median_conf_add).sigmoid())
                 if FLAGS.norm_factor != 'None':
                     norm_exp = float(FLAGS.norm_factor)
                 else:
@@ -431,7 +466,7 @@ def main(argv):
                 median_embd = F.normalize(median_embd, p=norm_exp, dim=1) if norm_exp is not None else median_embd
                 supp_losses,pos_sums,neg_sums = [],[],[]
                 confs_sum = 0.
-                #conf_reg = 0.
+                conf_reg = 0.
                 for level_proj,level_conf_ch in zip(proj_embds, class_out):
                     level_conf = level_conf_ch.movedim(1,3)
                     norm_proj = F.normalize(level_proj, p=norm_exp, dim=1) if norm_exp is not None else level_proj
@@ -443,13 +478,12 @@ def main(argv):
                     supp_losses.append(supp_loss)
                     pos_sums.append(pos_grad_sum)
                     neg_sums.append(neg_grad_sum)
-                    #conf_reg += ((level_conf[level_conf > 4.] - 4.)**2).sum()
+                    conf_reg += ((level_conf[level_conf > 4.] - 4.)**2).sum()
 
                 supp_class_loss = sum(supp_losses)/confs_sum
-                #conf_reg /= confs_sum
-                conf_reg = 0.
+                conf_reg /= confs_sum
                 supp_pos = sum(pos_sums)
-                supp_neg = sum(neg_sums)
+                supp_neg = sum(neg_sums)'''
 
             inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
 
@@ -497,6 +531,8 @@ def main(argv):
             if not val_iter:
                 iter_metrics['supp_class_loss'] += supp_class_loss
                 iter_metrics['proj_loss'] += proj_loss
+                iter_metrics['num_valid'] += valid.sum()
+                iter_metrics['min_clust'] += img_max_sims.min()
                 iter_metrics['supp_pos'] += supp_pos
                 iter_metrics['supp_neg'] += supp_neg
                 iter_metrics['conf_reg'] += conf_reg
@@ -593,7 +629,7 @@ def main(argv):
                     category_metrics[key] = []
 
             iter_metrics = {'supp_class_loss': 0., 'proj_loss':0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
-                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0.}
+                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0., 'num_valid':0., 'min_clust':0.}
             log_count = 0
 
             #except Exception as e:

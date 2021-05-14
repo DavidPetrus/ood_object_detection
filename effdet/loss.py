@@ -129,7 +129,7 @@ def smooth_l1_loss(
         abs_err = torch.abs(err)
         '''sort,_ = torch.sort(abs_err.reshape(-1))
         print(sort[:10],sort[20],sort[50],sort[100],sort[800])
-        conf_err = torch.where(weights > beta, abs_err, torch.tensor(10000.,dtype=torch.float32, device='cuda'))
+        conf_err = torch.where(weights > beta, abs_err, torch.tensor(1000.,dtype=torch.float32, device='cuda'))
         print(conf_err[conf_err != 1000.].mean(),conf_err[conf_err != 1000.].max())
         sort_conf,_ = torch.sort(conf_err.reshape(-1))
         print(sort_conf[:10],sort_conf[20],sort_conf[50],sort_conf[100],sort_conf[800])'''

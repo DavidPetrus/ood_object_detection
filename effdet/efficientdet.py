@@ -672,7 +672,7 @@ class MetaHead(nn.Module):
             outputs.append(x_pred)
 
         if ret_activs:
-            return activs,outputs
+            return outputs,activs
         else:
             return outputs
 
@@ -710,9 +710,6 @@ class ProjectionNet(nn.Module):
             median_embd = torch.gather(sorted_elems,0,median_idxs)
         else:
             median_embd = torch.gather(sorted_elems,0,median_idxs).detach()
-            print('---------------------')
-            print(median_embd)
-            print(sorted_elems[torch.arange(0,median_idxs.shape[1],device='cuda'), median_idxs[0]])
 
         return median_embd, conf_sum
 
@@ -857,7 +854,7 @@ class EfficientDet(nn.Module):
                 x_class = self.class_net(x,level_offset=FLAGS.supp_level_offset)
                 return x_class, x
             else:
-                anchor_inps, x_class = self.class_net(x,fast_weights=fast_weights,ret_activs=True,level_offset=FLAGS.supp_level_offset)
+                x_class, anchor_inps = self.class_net(x,fast_weights=fast_weights,ret_activs=True,level_offset=FLAGS.supp_level_offset)
                 return x_class, anchor_inps
         elif mode=='supp_bb':
             x = self.backbone(x)
