@@ -147,6 +147,20 @@ def smooth_l1_loss(
     else:
         return loss.sum(), pos_grad_sum, neg_grad_sum
 
+def l2_loss(
+        input, target, beta: float = 1. / 9, weights: Optional[torch.Tensor] = None, size_average: bool = False):
+
+    err = input - target
+    loss = err**2
+
+    if weights is not None:
+        loss *= weights
+        weighted_sign = torch.sign(err)*weights
+        pos_grad_sum = weighted_sign[weighted_sign > 0.].sum()
+        neg_grad_sum = weighted_sign[weighted_sign < 0.].sum()
+
+    return loss.mean(), pos_grad_sum, neg_grad_sum
+
 
 def _box_loss(box_outputs, box_targets, num_positives, delta: float = 0.1):
     """Computes box regression loss."""

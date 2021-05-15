@@ -14,7 +14,7 @@ from effdet.config.model_config import default_detection_model_configs
 from effdet.distributed import all_gather_container
 from effdet.bench import _post_process
 from effdet.anchors import Anchors, AnchorLabeler, generate_detections
-from effdet.loss import DetectionLoss, SupportLoss, smooth_l1_loss
+from effdet.loss import DetectionLoss, SupportLoss, smooth_l1_loss, l2_loss
 from effdet.evaluation.detection_evaluator import ObjectDetectionEvaluator
 
 
@@ -49,6 +49,7 @@ flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
+flags.DEFINE_string('supp_loss','mae','')
 flags.DEFINE_bool('use_anchor',False,'')
 flags.DEFINE_bool('median_grad',False,'')
 flags.DEFINE_float('meta_clip',10.,'')
@@ -61,6 +62,7 @@ flags.DEFINE_integer('proj_size',256,'')
 flags.DEFINE_bool('proj_stop_grad',False,'')
 flags.DEFINE_float('proj_reg',0.1,'')
 flags.DEFINE_bool('proj_conf_weigh',True,'')
+flags.DEFINE_bool('proj_conf_sg',False,'')
 flags.DEFINE_float('dot_mult',8.,'')
 flags.DEFINE_float('dot_add',-3.,'')
 flags.DEFINE_float('median_conf_factor',1.,'')
@@ -212,7 +214,10 @@ def main(argv):
     if FLAGS.use_anchor:
         support_loss_fn = SupportLoss(model_config, loss_type=FLAGS.loss_type)
     else:
-        support_loss_fn = smooth_l1_loss
+        if FLAGS.supp_loss == 'mae':
+            support_loss_fn = smooth_l1_loss
+        elif FLAGS.supp_loss == 'mse':
+            support_loss_fn = l2_loss
 
     IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -283,8 +288,8 @@ def main(argv):
     evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
-    iter_metrics = {'supp_class_loss': 0., 'proj_loss':0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
-                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0., 'num_valid':0., 'min_clust':0.}
+    iter_metrics = {'supp_class_loss': 0., 'proj_loss':0., 'proj_loss':0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
+                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0., 'num_valid':0., 'min_clust':0., 'max_clust':0.}
     val_metrics = {'val_supp_class_loss': 0., 'val_proj_loss':0., 'val_conf_reg':0., 'val_med_conf_sum':0., 'val_supp_pos':0.,'val_supp_neg':0., 
                 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
     t_ix = 0
@@ -355,7 +360,7 @@ def main(argv):
                 rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
                 feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                confs.append(level_conf.movedim(0,1).reshape(-1))
+                confs.append(level_conf.movedim(1,3).reshape(-1))
                 proj_feed.append(feed_embds)
                 proj_labs.append(labs.reshape(-1))
 
@@ -378,13 +383,16 @@ def main(argv):
             pair_logits = torch.where(mask, torch.tensor(-10000.,dtype=torch.float32, device='cuda'), sim_mat)
             pair_logits[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs] = sim_mat[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs]
             proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
-            if FLAGS.proj_conf_weigh: 
+            proj_acc = (torch.argmax(pair_logits, dim=1)==pair_idxs).float().mean()
+            if FLAGS.proj_conf_weigh:
+                if FLAGS.proj_conf_sg:
+                    confs = confs.detach()
                 proj_loss *= confs
                 proj_loss = proj_loss.sum()/confs.sum()
             else:
                 proj_loss = proj_loss.mean()
 
-            print(proj_loss)
+            #print(proj_loss)
         else:
             proj_loss = 0.
 
@@ -412,51 +420,62 @@ def main(argv):
                     rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
                     feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                    res_conf = level_conf.reshape(FLAGS.num_sup,-1)
+                    res_conf = level_conf.movedim(1,3).reshape(FLAGS.num_sup,-1)
                     q = torch.quantile(res_conf, 0.75, dim=1, keepdims=True)
                     mask = res_conf > q
-                    confs.append(res_conf[mask])
-                    feed_embds = feed_embds.reshape(num_anchs,FLAGS.num_sup,-1,feed_embds.shape[-1]).movedim(0,1).reshape(FLAGS.num_sup,-1,feed_embds.shape[-1])
+                    while mask.sum()/res_conf.shape[1] < 6.25:
+                        res_conf[res_conf==q] -= 1.
+                        q = torch.quantile(res_conf, 0.75, dim=1, keepdims=True)
+                        mask = res_conf > q
+
+                    confs.append(res_conf[mask].reshape(FLAGS.num_sup, -1))
+                    feed_embds = feed_embds.reshape(FLAGS.num_sup, -1, feed_embds.shape[-1])
                     if FLAGS.proj_stop_grad:
                         proj_preds = proj_net(feed_embds[mask].detach())
                     else:
                         proj_preds = proj_net(feed_embds[mask])
 
-                    proj_embds.append(proj_preds)
+                    proj_embds.append(proj_preds.reshape(FLAGS.num_sup, -1, FLAGS.proj_size))
 
-                proj_embds = torch.cat(proj_embds, dim=0)
+                proj_embds = torch.cat(proj_embds, dim=1).reshape(-1, FLAGS.proj_size)
                 proj_embds = F.normalize(proj_embds, p=2)
                 sim_mat = torch.matmul(proj_embds, proj_embds.t())
-                conf_logits = torch.cat(confs, dim=0)
+                conf_logits = torch.cat(confs, dim=1).reshape(-1)
                 conf_probs = conf_logits.sigmoid()
                 conf_mat = torch.matmul(conf_probs.view(-1,1),conf_probs.view(1,-1))
                 weighted_sim = conf_mat*sim_mat# - 1000.*torch.eye(sim_mat.shape[0], device='cuda')
                 weighted_sim = weighted_sim.reshape(FLAGS.num_sup, -1, sim_mat.shape[0])
 
                 img_avg_sims_all = weighted_sim.sum(2)
-                img_max_sims,max_idxs = torch.max(img_avg_sims_all,dim=1)
+                max_idxs = torch.argmax(img_avg_sims_all,dim=1)
                 max_idxs = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda') + max_idxs
                 init_cluster = sim_mat[max_idxs][:,max_idxs]
                 avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
                 valid = avg_init > FLAGS.sim_thresh
-                print(valid.sum())
+                #print(valid.sum())
 
                 img_avg_sims_clust = weighted_sim[:,:,max_idxs[valid]].sum(2)
-                img_max_sims,max_idxs = torch.max(img_avg_sims_clust, dim=1)
+                max_idxs = torch.argmax(img_avg_sims_clust, dim=1)
                 max_idxs = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda') + max_idxs
-                print(img_max_sims.min())
+                init_cluster = sim_mat[max_idxs][:,max_idxs]
+                avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
+                #print(avg_init.min())
 
                 all_max_sims_clust,_ = sim_mat[:,max_idxs].max(1)
                 cluster_idxs = all_max_sims_clust > FLAGS.sim_thresh
                 
                 detach_confs = conf_logits.detach()
                 target_sims = all_max_sims_clust
-                target_sims[max_idxs] = img_max_sims
-                print(target_sims[cluster_idxs].max(), target_sims[cluster_idxs].min())
+                target_sims[max_idxs] = avg_init
+                #print(target_sims[cluster_idxs].max(), target_sims[cluster_idxs].min())
                 #print(target_sims[~cluster_idxs].max(), target_sims[~cluster_idxs].min())
                 target = torch.where(cluster_idxs, detach_confs+FLAGS.sim_weight*target_sims, detach_confs+FLAGS.sim_weight*(target_sims-1))
+
                 supp_class_loss, supp_pos, supp_neg = support_loss_fn(conf_logits, target, weights=conf_probs, beta=FLAGS.beta)
-                confs_sum = conf_probs.sum()
+                if FLAGS.supp_loss == 'mse':
+                    confs_sum = conf_probs.sum()
+                else:
+                    confs_sum = conf_probs.mean()
                 supp_class_loss = supp_class_loss/confs_sum
                 conf_reg = 0.
                 med_conf_sum = 0.
@@ -536,8 +555,10 @@ def main(argv):
             if not val_iter:
                 iter_metrics['supp_class_loss'] += supp_class_loss
                 iter_metrics['proj_loss'] += proj_loss
+                iter_metrics['proj_acc'] += proj_acc
                 iter_metrics['num_valid'] += valid.sum()
-                iter_metrics['min_clust'] += img_max_sims.min()
+                iter_metrics['min_clust'] += avg_init.min()
+                iter_metrics['max_clust'] += avg_init.max()
                 iter_metrics['supp_pos'] += supp_pos
                 iter_metrics['supp_neg'] += supp_neg
                 iter_metrics['conf_reg'] += conf_reg
@@ -633,8 +654,8 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
-            iter_metrics = {'supp_class_loss': 0., 'proj_loss':0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
-                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0., 'num_valid':0., 'min_clust':0.}
+            iter_metrics = {'supp_class_loss': 0., 'proj_loss':0., 'proj_acc':0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
+                'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0., 'num_valid':0., 'min_clust':0., 'max_clust':0.}
             log_count = 0
 
             #except Exception as e:
