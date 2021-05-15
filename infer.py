@@ -355,7 +355,7 @@ def main(argv):
                 rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
                 feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                confs.append(level_conf.reshape(-1))
+                confs.append(level_conf.movedim(0,1).reshape(-1))
                 proj_feed.append(feed_embds)
                 proj_labs.append(labs.reshape(-1))
 
@@ -403,7 +403,6 @@ def main(argv):
                 if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
                 supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
             else:
-                obj_indices = []
                 proj_embds = []
                 confs = []
                 for level_embds,level_conf in zip(obj_embds, class_out):
@@ -413,13 +412,16 @@ def main(argv):
                     rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
                     feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                    confs.append(level_conf.reshape(-1))
+                    res_conf = level_conf.reshape(FLAGS.num_sup,-1)
+                    q = torch.quantile(res_conf, 0.75, dim=1, keepdims=True)
+                    mask = res_conf > q
+                    confs.append(res_conf[mask])
+                    feed_embds = feed_embds.reshape(num_anchs,FLAGS.num_sup,-1,feed_embds.shape[-1]).movedim(0,1).reshape(FLAGS.num_sup,-1,feed_embds.shape[-1])
                     if FLAGS.proj_stop_grad:
-                        proj_preds = proj_net(feed_embds.detach())
+                        proj_preds = proj_net(feed_embds[mask].detach())
                     else:
-                        proj_preds = proj_net(feed_embds)
+                        proj_preds = proj_net(feed_embds[mask])
 
-                    proj_preds = proj_preds.view(num_anchs,FLAGS.sup_size,-1,proj_preds.shape[-1]).movedim(0,1).view(-1,proj_preds.shape[-1])
                     proj_embds.append(proj_preds)
 
                 proj_embds = torch.cat(proj_embds, dim=0)
@@ -429,11 +431,11 @@ def main(argv):
                 conf_probs = conf_logits.sigmoid()
                 conf_mat = torch.matmul(conf_probs.view(-1,1),conf_probs.view(1,-1))
                 weighted_sim = conf_mat*sim_mat# - 1000.*torch.eye(sim_mat.shape[0], device='cuda')
-                weighted_sim = weighted_sim.view(FLAGS.num_sup, -1, sim_mat.shape[0])
+                weighted_sim = weighted_sim.reshape(FLAGS.num_sup, -1, sim_mat.shape[0])
 
                 img_avg_sims_all = weighted_sim.sum(2)
                 img_max_sims,max_idxs = torch.max(img_avg_sims_all,dim=1)
-                max_idxs = torch.arange(0, FLAGS.num_sup*sim_mat.shape[0], FLAGS.num_sup, device='cuda') + max_idxs
+                max_idxs = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda') + max_idxs
                 init_cluster = sim_mat[max_idxs][:,max_idxs]
                 avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
                 valid = avg_init > FLAGS.sim_thresh
@@ -441,20 +443,23 @@ def main(argv):
 
                 img_avg_sims_clust = weighted_sim[:,:,max_idxs[valid]].sum(2)
                 img_max_sims,max_idxs = torch.max(img_avg_sims_clust, dim=1)
-                max_idxs = torch.arange(0, FLAGS.num_sup*sim_mat.shape[0], FLAGS.num_sup, device='cuda') + max_idxs
+                max_idxs = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda') + max_idxs
                 print(img_max_sims.min())
 
-                all_max_sims_clust = sim_mat[:,max_idxs].max(1)
+                all_max_sims_clust,_ = sim_mat[:,max_idxs].max(1)
                 cluster_idxs = all_max_sims_clust > FLAGS.sim_thresh
                 
                 detach_confs = conf_logits.detach()
                 target_sims = all_max_sims_clust
                 target_sims[max_idxs] = img_max_sims
                 print(target_sims[cluster_idxs].max(), target_sims[cluster_idxs].min())
-                print(target_sims[not cluster_idxs].max(), target_sims[not cluster_idxs].min())
-                target = torch.where(cluster_idxs, detach_confs+target_sims, detach_confs+target_sims-1)
+                #print(target_sims[~cluster_idxs].max(), target_sims[~cluster_idxs].min())
+                target = torch.where(cluster_idxs, detach_confs+FLAGS.sim_weight*target_sims, detach_confs+FLAGS.sim_weight*(target_sims-1))
                 supp_class_loss, supp_pos, supp_neg = support_loss_fn(conf_logits, target, weights=conf_probs, beta=FLAGS.beta)
+                confs_sum = conf_probs.sum()
+                supp_class_loss = supp_class_loss/confs_sum
                 conf_reg = 0.
+                med_conf_sum = 0.
 
 
                 '''median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor + FLAGS.median_conf_add).sigmoid())
