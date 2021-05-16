@@ -359,30 +359,39 @@ def main(argv):
             confs = []
             proj_feed = []
             proj_labs = []
+            obj_embds = [obj_embds[3],obj_embds[1],obj_embds[2],obj_embds[0]]
+            class_out = [class_out[3],class_out[1],class_out[2],class_out[0]]
+            proj_cls_anchors = [proj_cls_anchors[3],proj_cls_anchors[1],proj_cls_anchors[2],proj_cls_anchors[0]]
             for level_embds,level_conf,labs in zip(obj_embds, class_out, proj_cls_anchors):
+                print(level_embds.shape, level_conf.shape, labs.shape)
                 trans_embds = level_embds.movedim(1,3)
                 flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
                 pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
                 rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
                 feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                conf_perm = level_conf.movedim(1,3)
-                confs.append(conf_perm.reshape(-1))
-                proj_feed.append(feed_embds)
-                if FLAGS.proj_max_anchor:
-                    max_confs,_ = conf_perm.max(dim=3, keepdims=True)
-                    labs = torch.where(conf_perm==max_confs, labs, -1)
-                proj_labs.append(labs.reshape(-1))
+                conf_perm = level_conf.movedim(0,3).reshape(num_anchs,-1,FLAGS.num_qry)
+                feed_embds = feed_embds.reshape(FLAGS.num_qry,-1,num_anchs,model_config.fpn_channels+num_anchs).movedim(0,3)
+                labs = labs.movedim(0,3).movedim(2,0).reshape(num_anchs,-1,FLAGS.num_qry)
+                shuffle_anchs = torch.randperm(num_anchs, device='cuda')
+                shuffle_cells = torch.randperm(conf_perm.shape[1], device='cuda')
+                conf_perm = conf_perm[shuffle_anchs][:,shuffle_cells]
+                feed_embds = feed_embds[shuffle_anchs][:,shuffle_cells]
+                labs = labs[shuffle_anchs][:,shuffle_cells]
 
-            confs = torch.cat(confs, dim=0)
-            proj_feed = torch.cat(proj_feed, dim=0)
-            proj_labs = torch.cat(proj_labs, dim=0)
+                confs.append(conf_perm)
+                proj_feed.append(feed_embds)
+                proj_labs.append(labs)
+
+            confs = torch.cat(confs, dim=2).reshape(-1)
+            proj_feed = torch.cat(proj_feed, dim=2).reshape(-1,model_config.fpn_channels+num_anchs)
+            proj_labs = torch.cat(proj_labs, dim=2).reshape(-1)
             obj_idxs = proj_labs != -1
-            shuffled_idxs = torch.randperm(obj_idxs.sum(), device='cuda')
-            proj_embds = proj_net(proj_feed[obj_idxs][shuffled_idxs])
+            #shuffled_idxs = torch.randperm(obj_idxs.sum(), device='cuda')
+            proj_embds = proj_net(proj_feed[obj_idxs])
             proj_embds = F.normalize(proj_embds, p=2)
-            proj_labs = proj_labs[obj_idxs][shuffled_idxs]
-            confs = confs[obj_idxs][shuffled_idxs].sigmoid()
+            proj_labs = proj_labs[obj_idxs]
+            confs = confs[obj_idxs].sigmoid()
             sim_mat = torch.matmul(proj_embds, proj_embds.t()) / FLAGS.proj_temp
 
             mask = proj_labs.view(-1,1) == proj_labs.view(1,-1)
@@ -399,19 +408,7 @@ def main(argv):
             proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
             proj_loss = proj_loss.mean()
             proj_acc = (torch.argmax(pair_logits, dim=1)==pair_idxs).float().mean()
-            
-            '''if pair_logits.shape[0] > 0.:
-                proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
-                proj_acc = (torch.argmax(pair_logits, dim=1)==pair_idxs).float().mean()
-                if FLAGS.proj_conf_weigh:
-                    if FLAGS.proj_conf_sg:
-                        confs = confs.detach()
-                    proj_loss *= confs
-                    proj_loss = proj_loss.sum()/confs.sum()
-                else:
-                    proj_loss = proj_loss.mean()
-            else:
-                proj_loss=0.'''
+            print(proj_loss, proj_acc)
         else:
             proj_loss = 0.
 
