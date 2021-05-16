@@ -353,53 +353,54 @@ def main(argv):
 
         #if not val_iter and FLAGS.proj_reg>0.:
         if FLAGS.proj_reg>0.:
-            with torch.set_grad_enabled(not FLAGS.proj_stop_grad):
+            with torch.set_grad_enabled(not FLAGS.proj_stop_grad and not val_iter):
                 # Maybe only do top 3 levels?
                 class_out, obj_embds = model([qry_lev[:FLAGS.num_qry] for qry_lev in qry_activs], mode='qry_cls', ret_activs=True)
 
-            confs = []
-            proj_feed = []
-            proj_labs = []
-            for level_embds,level_conf,labs in zip(obj_embds, class_out, proj_cls_anchors):
-                trans_embds = level_embds.movedim(1,3)
-                flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
-                pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
-                rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
-                feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
+            with torch.set_grad_enabled(not val_iter):
+                confs = []
+                proj_feed = []
+                proj_labs = []
+                for level_embds,level_conf,labs in zip(obj_embds, class_out, proj_cls_anchors):
+                    trans_embds = level_embds.movedim(1,3)
+                    flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
+                    pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
+                    rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
+                    feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                conf_perm = level_conf.movedim(1,3)
-                confs.append(conf_perm.reshape(-1))
-                proj_feed.append(feed_embds)
-                if FLAGS.proj_max_anchor:
-                    max_confs,_ = conf_perm.max(dim=3, keepdims=True)
-                    labs = torch.where(conf_perm==max_confs, labs, -1)
-                proj_labs.append(labs.reshape(-1))
+                    conf_perm = level_conf.movedim(1,3)
+                    confs.append(conf_perm.reshape(-1))
+                    proj_feed.append(feed_embds)
+                    if FLAGS.proj_max_anchor:
+                        max_confs,_ = conf_perm.max(dim=3, keepdims=True)
+                        labs = torch.where(conf_perm==max_confs, labs, -1)
+                    proj_labs.append(labs.reshape(-1))
 
-            confs = torch.cat(confs, dim=0)
-            proj_feed = torch.cat(proj_feed, dim=0)
-            proj_labs = torch.cat(proj_labs, dim=0)
-            obj_idxs = proj_labs != -1
-            shuffled_idxs = torch.randperm(obj_idxs.sum(), device='cuda')
-            proj_embds = proj_net(proj_feed[obj_idxs][shuffled_idxs])
-            proj_embds = F.normalize(proj_embds, p=2)
-            proj_labs = proj_labs[obj_idxs][shuffled_idxs]
-            confs = confs[obj_idxs][shuffled_idxs].sigmoid()
-            sim_mat = torch.matmul(proj_embds, proj_embds.t()) / FLAGS.proj_temp
+                confs = torch.cat(confs, dim=0)
+                proj_feed = torch.cat(proj_feed, dim=0)
+                proj_labs = torch.cat(proj_labs, dim=0)
+                obj_idxs = proj_labs != -1
+                shuffled_idxs = torch.randperm(obj_idxs.sum(), device='cuda')
+                proj_embds = proj_net(proj_feed[obj_idxs][shuffled_idxs])
+                proj_embds = F.normalize(proj_embds, p=2)
+                proj_labs = proj_labs[obj_idxs][shuffled_idxs]
+                confs = confs[obj_idxs][shuffled_idxs].sigmoid()
+                sim_mat = torch.matmul(proj_embds, proj_embds.t()) / FLAGS.proj_temp
 
-            mask = proj_labs.view(-1,1) == proj_labs.view(1,-1)
-            triu_mask = torch.triu(mask, diagonal=1)
-            pair_idxs = torch.argmax(triu_mask.long(), dim=1)
-            pair_idxs[pair_idxs==0] = torch.argmax(mask[pair_idxs==0].long(), dim=1)
+                mask = proj_labs.view(-1,1) == proj_labs.view(1,-1)
+                triu_mask = torch.triu(mask, diagonal=1)
+                pair_idxs = torch.argmax(triu_mask.long(), dim=1)
+                pair_idxs[pair_idxs==0] = torch.argmax(mask[pair_idxs==0].long(), dim=1)
 
-            pair_logits = torch.where(mask, torch.tensor(-10000.,dtype=torch.float32, device='cuda'), sim_mat)
-            pair_logits[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs] = sim_mat[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs]
-            pair_logits = pair_logits[proj_labs==cls_id]
-            pair_idxs = pair_idxs[proj_labs==cls_id]
-            confs = confs[proj_labs==cls_id]
+                pair_logits = torch.where(mask, torch.tensor(-10000.,dtype=torch.float32, device='cuda'), sim_mat)
+                pair_logits[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs] = sim_mat[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs]
+                pair_logits = pair_logits[proj_labs==cls_id]
+                pair_idxs = pair_idxs[proj_labs==cls_id]
+                confs = confs[proj_labs==cls_id]
 
-            proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
-            proj_loss = proj_loss.mean()
-            proj_acc = (torch.argmax(pair_logits, dim=1)==pair_idxs).float().mean()
+                proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
+                proj_loss = proj_loss.mean()
+                proj_acc = (torch.argmax(pair_logits, dim=1)==pair_idxs).float().mean()
             
             '''if pair_logits.shape[0] > 0.:
                 proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
