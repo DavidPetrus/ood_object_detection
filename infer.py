@@ -277,8 +277,8 @@ def main(argv):
         class_pars = [par for n,par in model.class_net.named_parameters() if n not in ['predict_pw', 'predict_pb']]
         predict_pars = [par for n,par in model.class_net.named_parameters() if n in ['predict_pw', 'predict_pb']]
         meta_param_groups = [{'params': predict_pars,'lr':FLAGS.meta_lr},
-            {'params': class_pars,'lr':FLAGS.meta_lr},
-            {'params': proj_net.parameters(),'lr':FLAGS.meta_lr},
+            {'params': class_pars,'lr':0.},
+            {'params': proj_net.parameters(),'lr':0.},
             {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
             {'params':learnable_lr,'lr':0.}]
 
