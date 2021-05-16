@@ -115,6 +115,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                     supp_cls_lab.append(img_cat)
 
                 query_imgs = random.sample(list(self.lvis_sample[cat]),self.num_qry)
+                task_cls_id = cat_ls.index(cat)
 
                 for img_path in query_imgs:
                     cat_idxs = []
@@ -201,7 +202,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             proj_lab_batch = {'cls':proj_cls_ls, 'bbox': proj_bbox_ls, 'cls_anchor':p_cls_targets, 'bbox_anchor':p_box_targets, 'num_positives':p_num_positives}
 
             #yield list(map(torch.stack, zip(*support_img_batch))), supp_cls_lab, list(map(torch.stack, zip(*query_img_batch))), query_lab_batch, task_cats, val_iter
-            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, proj_lab_batch, task_cats, val_iter
+            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, proj_lab_batch, task_cats, task_cls_id, val_iter
 
 
 def load_metadata_dicts(base_path):

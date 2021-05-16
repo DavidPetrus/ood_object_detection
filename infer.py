@@ -42,27 +42,30 @@ flags.DEFINE_integer('num_val_cats',50,'')
 flags.DEFINE_integer('val_freq',400,'')
 flags.DEFINE_integer('n_way',1,'')
 flags.DEFINE_integer('num_sup',25,'')
-flags.DEFINE_integer('num_qry',8,'')
-flags.DEFINE_integer('num_zero_images',8,'')
+flags.DEFINE_integer('num_qry',7,'')
+flags.DEFINE_integer('num_zero_images',7,'')
 flags.DEFINE_integer('meta_batch_size',4,'')
 flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_string('supp_loss','mae','')
+flags.DEFINE_bool('conf_sg',False,'')
 flags.DEFINE_bool('use_anchor',False,'')
 flags.DEFINE_bool('median_grad',False,'')
 flags.DEFINE_float('meta_clip',10.,'')
 flags.DEFINE_float('sim_thresh',0.2,'')
-flags.DEFINE_float('sim_weight',1.,'')
+flags.DEFINE_float('sim_weight',10.,'')
 flags.DEFINE_float('beta',1/20,'')
 flags.DEFINE_float('conf_reg',0.,'')
+flags.DEFINE_bool('proj_max_anchor',False,'')
 flags.DEFINE_integer('proj_depth',3,'')
 flags.DEFINE_integer('proj_size',256,'')
 flags.DEFINE_bool('proj_stop_grad',False,'')
-flags.DEFINE_float('proj_reg',0.1,'')
-flags.DEFINE_bool('proj_conf_weigh',True,'')
-flags.DEFINE_bool('proj_conf_sg',False,'')
+flags.DEFINE_float('proj_reg',0.3,'')
+flags.DEFINE_bool('proj_conf_weigh',False,'')
+flags.DEFINE_bool('proj_conf_sg',True,'')
+flags.DEFINE_float('proj_temp',0.1,'')
 flags.DEFINE_float('dot_mult',8.,'')
 flags.DEFINE_float('dot_add',-3.,'')
 flags.DEFINE_float('median_conf_factor',1.,'')
@@ -271,7 +274,10 @@ def main(argv):
             {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
             {'params':learnable_lr,'lr':0.}]
     else:
-        meta_param_groups = [{'params': model.class_net.parameters(),'lr':FLAGS.meta_lr},
+        class_pars = [par for n,par in model.class_net.named_parameters() if n not in ['predict_pw', 'predict_pb']]
+        predict_pars = [par for n,par in model.class_net.named_parameters() if n in ['predict_pw', 'predict_pb']]
+        meta_param_groups = [{'params': predict_pars,'lr':FLAGS.meta_lr},
+            {'params': class_pars,'lr':FLAGS.meta_lr},
             {'params': proj_net.parameters(),'lr':FLAGS.meta_lr},
             {'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.},
             {'params':learnable_lr,'lr':0.}]
@@ -288,9 +294,9 @@ def main(argv):
     evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
-    iter_metrics = {'supp_class_loss': 0., 'proj_loss':0., 'proj_loss':0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
+    iter_metrics = {'supp_class_loss': 0., 'proj_loss':0., 'proj_acc':0.,'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
                 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0., 'num_valid':0., 'min_clust':0., 'max_clust':0.}
-    val_metrics = {'val_supp_class_loss': 0., 'val_proj_loss':0., 'val_conf_reg':0., 'val_med_conf_sum':0., 'val_supp_pos':0.,'val_supp_neg':0., 
+    val_metrics = {'val_supp_class_loss': 0., 'val_proj_loss':0.,'val_proj_acc':0., 'val_conf_reg':0., 'val_med_conf_sum':0., 'val_supp_pos':0.,'val_supp_neg':0., 
                 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
     t_ix = 0
     train_iter = 0
@@ -301,7 +307,7 @@ def main(argv):
     meta_norm = 0.
     #with torch.autograd.detect_anomaly():
     for task in loader:
-        supp_imgs, supp_cls_labs, qry_imgs, qry_labs, proj_labs, task_cats, val_iter = task
+        supp_imgs, supp_cls_labs, qry_imgs, qry_labs, proj_labs, task_cats, cls_id, val_iter = task
 
         if t_ix == 0 or val_iter: meta_optimizer.zero_grad()
 
@@ -345,35 +351,40 @@ def main(argv):
         with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
             qry_activs, qry_box_out = model(feats,mode='not_cls')
 
-        if not val_iter and FLAGS.proj_reg>0.:
+        #if not val_iter and FLAGS.proj_reg>0.:
+        if FLAGS.proj_reg>0.:
             with torch.set_grad_enabled(not FLAGS.proj_stop_grad):
                 # Maybe only do top 3 levels?
                 class_out, obj_embds = model([qry_lev[:FLAGS.num_qry] for qry_lev in qry_activs], mode='qry_cls', ret_activs=True)
 
-            proj_feed = []
             confs = []
+            proj_feed = []
             proj_labs = []
-            for level_embds,level_conf, labs in zip(obj_embds, class_out, proj_cls_anchors):
+            for level_embds,level_conf,labs in zip(obj_embds, class_out, proj_cls_anchors):
                 trans_embds = level_embds.movedim(1,3)
                 flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
                 pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
                 rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
                 feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                confs.append(level_conf.movedim(1,3).reshape(-1))
+                conf_perm = level_conf.movedim(1,3)
+                confs.append(conf_perm.reshape(-1))
                 proj_feed.append(feed_embds)
+                if FLAGS.proj_max_anchor:
+                    max_confs,_ = conf_perm.max(dim=3, keepdims=True)
+                    labs = torch.where(conf_perm==max_confs, labs, -1)
                 proj_labs.append(labs.reshape(-1))
 
-            confs = torch.cat(confs,dim=0)
-            proj_feed = torch.cat(proj_feed,dim=0)
-            proj_labs = torch.cat(proj_labs,dim=0)
+            confs = torch.cat(confs, dim=0)
+            proj_feed = torch.cat(proj_feed, dim=0)
+            proj_labs = torch.cat(proj_labs, dim=0)
             obj_idxs = proj_labs != -1
-            shuffled_idxs = torch.randperm(obj_idxs.sum())
+            shuffled_idxs = torch.randperm(obj_idxs.sum(), device='cuda')
             proj_embds = proj_net(proj_feed[obj_idxs][shuffled_idxs])
             proj_embds = F.normalize(proj_embds, p=2)
             proj_labs = proj_labs[obj_idxs][shuffled_idxs]
             confs = confs[obj_idxs][shuffled_idxs].sigmoid()
-            sim_mat = torch.matmul(proj_embds, proj_embds.t()) / 0.2
+            sim_mat = torch.matmul(proj_embds, proj_embds.t()) / FLAGS.proj_temp
 
             mask = proj_labs.view(-1,1) == proj_labs.view(1,-1)
             triu_mask = torch.triu(mask, diagonal=1)
@@ -382,212 +393,205 @@ def main(argv):
 
             pair_logits = torch.where(mask, torch.tensor(-10000.,dtype=torch.float32, device='cuda'), sim_mat)
             pair_logits[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs] = sim_mat[torch.arange(0,mask.shape[0],device='cuda'), pair_idxs]
-            proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
-            proj_acc = (torch.argmax(pair_logits, dim=1)==pair_idxs).float().mean()
-            if FLAGS.proj_conf_weigh:
-                if FLAGS.proj_conf_sg:
-                    confs = confs.detach()
-                proj_loss *= confs
-                proj_loss = proj_loss.sum()/confs.sum()
-            else:
-                proj_loss = proj_loss.mean()
+            pair_logits = pair_logits[proj_labs==cls_id]
+            pair_idxs = pair_idxs[proj_labs==cls_id]
+            confs = confs[proj_labs==cls_id]
 
-            #print(proj_loss)
+            proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
+            proj_loss = proj_loss.mean()
+            proj_acc = (torch.argmax(pair_logits, dim=1)==pair_idxs).float().mean()
+            
+            '''if pair_logits.shape[0] > 0.:
+                proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='none')
+                proj_acc = (torch.argmax(pair_logits, dim=1)==pair_idxs).float().mean()
+                if FLAGS.proj_conf_weigh:
+                    if FLAGS.proj_conf_sg:
+                        confs = confs.detach()
+                    proj_loss *= confs
+                    proj_loss = proj_loss.sum()/confs.sum()
+                else:
+                    proj_loss = proj_loss.mean()
+            else:
+                proj_loss=0.'''
         else:
             proj_loss = 0.
 
+        if train_iter > 1000:
+            fast_weights = None
+            for s in range(FLAGS.steps):
+                class_out, obj_embds = model(supp_activs, fast_weights=fast_weights, mode='supp_cls')
+                if FLAGS.use_anchor:
+                    target_mul = anchor_net(obj_embds[FLAGS.at_start*FLAGS.supp_level_offset:])
 
-        fast_weights = None
-        for s in range(FLAGS.steps):
-            class_out, obj_embds = model(supp_activs, fast_weights=fast_weights, mode='supp_cls')
-            if FLAGS.use_anchor:
-                target_mul = anchor_net(obj_embds[FLAGS.at_start*FLAGS.supp_level_offset:])
+                    if not FLAGS.norm_supp:
+                        supp_num_positives = torch.tensor(1.)
+                    else:
+                        supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
 
-                if not FLAGS.norm_supp:
-                    supp_num_positives = torch.tensor(1.)
+                    if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
+                    supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
                 else:
-                    supp_num_positives = sum([tm_l.sigmoid().sum((1,2,3)) for tm_l in target_mul])
+                    proj_embds = []
+                    confs = []
+                    for level_embds,level_conf in zip(obj_embds, class_out):
+                        trans_embds = level_embds.movedim(1,3)
+                        flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
+                        pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
+                        rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
+                        feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
 
-                if FLAGS.loss_type == 'ce': target_mul = [tm_l.sigmoid() for tm_l in target_mul]
-                supp_class_loss = support_loss_fn(class_out, target_mul, supp_num_positives, anchor_net.alpha)
-            else:
-                proj_embds = []
-                confs = []
-                for level_embds,level_conf in zip(obj_embds, class_out):
-                    trans_embds = level_embds.movedim(1,3)
-                    flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
-                    pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
-                    rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
-                    feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
-
-                    res_conf = level_conf.movedim(1,3).reshape(FLAGS.num_sup,-1)
-                    q = torch.quantile(res_conf, 0.75, dim=1, keepdims=True)
-                    mask = res_conf > q
-                    while mask.sum()/res_conf.shape[1] < 6.25:
-                        res_conf[res_conf==q] -= 1.
+                        res_conf = level_conf.movedim(1,3).reshape(FLAGS.num_sup,-1)
                         q = torch.quantile(res_conf, 0.75, dim=1, keepdims=True)
                         mask = res_conf > q
+                        while mask.sum()/res_conf.shape[1] < 6.25:
+                            res_conf[res_conf==q] -= 1.
+                            q = torch.quantile(res_conf, 0.75, dim=1, keepdims=True)
+                            mask = res_conf > q
 
-                    confs.append(res_conf[mask].reshape(FLAGS.num_sup, -1))
-                    feed_embds = feed_embds.reshape(FLAGS.num_sup, -1, feed_embds.shape[-1])
-                    if FLAGS.proj_stop_grad:
-                        proj_preds = proj_net(feed_embds[mask].detach())
+                        confs.append(res_conf[mask].reshape(FLAGS.num_sup, -1))
+                        feed_embds = feed_embds.reshape(FLAGS.num_sup, -1, feed_embds.shape[-1])
+                        if FLAGS.proj_stop_grad:
+                            proj_preds = proj_net(feed_embds[mask].detach())
+                        else:
+                            proj_preds = proj_net(feed_embds[mask])
+
+                        proj_embds.append(proj_preds.reshape(FLAGS.num_sup, -1, FLAGS.proj_size))
+
+                    proj_embds = torch.cat(proj_embds, dim=1).reshape(-1, FLAGS.proj_size)
+                    proj_embds = F.normalize(proj_embds, p=2)
+                    sim_mat = torch.matmul(proj_embds, proj_embds.t())
+                    conf_logits = torch.cat(confs, dim=1).reshape(-1)
+                    conf_probs = conf_logits.sigmoid()
+                    conf_mat = torch.matmul(conf_probs.view(-1,1),conf_probs.view(1,-1))
+                    weighted_sim = conf_mat*sim_mat# - 1000.*torch.eye(sim_mat.shape[0], device='cuda')
+                    weighted_sim = weighted_sim.reshape(FLAGS.num_sup, -1, sim_mat.shape[0])
+
+                    img_avg_sims_all = weighted_sim.sum(2)
+                    max_idxs = torch.argmax(img_avg_sims_all,dim=1)
+                    max_idxs = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda') + max_idxs
+                    init_cluster = sim_mat[max_idxs][:,max_idxs]
+                    avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
+                    valid = avg_init > FLAGS.sim_thresh
+                    #print(valid.sum())
+
+                    img_avg_sims_clust = weighted_sim[:,:,max_idxs[valid]].sum(2)
+                    max_idxs = torch.argmax(img_avg_sims_clust, dim=1)
+                    max_idxs = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda') + max_idxs
+                    init_cluster = sim_mat[max_idxs][:,max_idxs]
+                    avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
+                    #print(avg_init.min())
+
+                    all_max_sims_clust,_ = sim_mat[:,max_idxs].max(1)
+                    cluster_idxs = all_max_sims_clust > FLAGS.sim_thresh
+                    
+                    detach_confs = conf_logits.detach()
+                    target_sims = all_max_sims_clust
+                    target_sims[max_idxs] = avg_init
+                    #print(target_sims[cluster_idxs].max(), target_sims[cluster_idxs].min())
+                    #print(target_sims[~cluster_idxs].max(), target_sims[~cluster_idxs].min())
+                    target = torch.where(cluster_idxs, detach_confs+FLAGS.sim_weight*target_sims, detach_confs+FLAGS.sim_weight*(target_sims-1))
+                    if FLAGS.conf_sg: conf_probs = conf_probs.detach()
+                    supp_class_loss, supp_pos, supp_neg = support_loss_fn(conf_logits, target, weights=conf_probs, beta=FLAGS.beta)
+                    if FLAGS.supp_loss == 'mae':
+                        confs_sum = conf_probs.sum()
                     else:
-                        proj_preds = proj_net(feed_embds[mask])
-
-                    proj_embds.append(proj_preds.reshape(FLAGS.num_sup, -1, FLAGS.proj_size))
-
-                proj_embds = torch.cat(proj_embds, dim=1).reshape(-1, FLAGS.proj_size)
-                proj_embds = F.normalize(proj_embds, p=2)
-                sim_mat = torch.matmul(proj_embds, proj_embds.t())
-                conf_logits = torch.cat(confs, dim=1).reshape(-1)
-                conf_probs = conf_logits.sigmoid()
-                conf_mat = torch.matmul(conf_probs.view(-1,1),conf_probs.view(1,-1))
-                weighted_sim = conf_mat*sim_mat# - 1000.*torch.eye(sim_mat.shape[0], device='cuda')
-                weighted_sim = weighted_sim.reshape(FLAGS.num_sup, -1, sim_mat.shape[0])
-
-                img_avg_sims_all = weighted_sim.sum(2)
-                max_idxs = torch.argmax(img_avg_sims_all,dim=1)
-                max_idxs = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda') + max_idxs
-                init_cluster = sim_mat[max_idxs][:,max_idxs]
-                avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
-                valid = avg_init > FLAGS.sim_thresh
-                #print(valid.sum())
-
-                img_avg_sims_clust = weighted_sim[:,:,max_idxs[valid]].sum(2)
-                max_idxs = torch.argmax(img_avg_sims_clust, dim=1)
-                max_idxs = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda') + max_idxs
-                init_cluster = sim_mat[max_idxs][:,max_idxs]
-                avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
-                #print(avg_init.min())
-
-                all_max_sims_clust,_ = sim_mat[:,max_idxs].max(1)
-                cluster_idxs = all_max_sims_clust > FLAGS.sim_thresh
-                
-                detach_confs = conf_logits.detach()
-                target_sims = all_max_sims_clust
-                target_sims[max_idxs] = avg_init
-                #print(target_sims[cluster_idxs].max(), target_sims[cluster_idxs].min())
-                #print(target_sims[~cluster_idxs].max(), target_sims[~cluster_idxs].min())
-                target = torch.where(cluster_idxs, detach_confs+FLAGS.sim_weight*target_sims, detach_confs+FLAGS.sim_weight*(target_sims-1))
-
-                supp_class_loss, supp_pos, supp_neg = support_loss_fn(conf_logits, target, weights=conf_probs, beta=FLAGS.beta)
-                if FLAGS.supp_loss == 'mse':
-                    confs_sum = conf_probs.sum()
-                else:
-                    confs_sum = conf_probs.mean()
-                supp_class_loss = supp_class_loss/confs_sum
-                conf_reg = 0.
-                med_conf_sum = 0.
+                        confs_sum = conf_probs.mean()
+                    supp_class_loss = supp_class_loss/confs_sum
+                    conf_reg = 0.
+                    med_conf_sum = 0.
 
 
-                '''median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor + FLAGS.median_conf_add).sigmoid())
-                if FLAGS.norm_factor != 'None':
-                    norm_exp = float(FLAGS.norm_factor)
-                else:
-                    norm_exp = None
+                inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
 
-                median_embd = F.normalize(median_embd, p=norm_exp, dim=1) if norm_exp is not None else median_embd
-                supp_losses,pos_sums,neg_sums = [],[],[]
-                confs_sum = 0.
-                conf_reg = 0.
-                for level_proj,level_conf_ch in zip(proj_embds, class_out):
-                    level_conf = level_conf_ch.movedim(1,3)
-                    norm_proj = F.normalize(level_proj, p=norm_exp, dim=1) if norm_exp is not None else level_proj
-                    dot_prod = torch.matmul(norm_proj, median_embd.t())
-                    target = proj_net.dot_mult*dot_prod.view(*level_conf.shape) + proj_net.dot_add
-                    conf_probs = level_conf.sigmoid()
-                    supp_loss, pos_grad_sum, neg_grad_sum = support_loss_fn(level_conf,target,weights=conf_probs,beta=FLAGS.beta)
-                    confs_sum += conf_probs.sum()
-                    supp_losses.append(supp_loss)
-                    pos_sums.append(pos_grad_sum)
-                    neg_sums.append(neg_grad_sum)
-                    conf_reg += ((level_conf[level_conf > 4.] - 4.)**2).sum()
-
-                supp_class_loss = sum(supp_losses)/confs_sum
-                conf_reg /= confs_sum
-                supp_pos = sum(pos_sums)
-                supp_neg = sum(neg_sums)'''
-
-            inner_grad = torch.autograd.grad(supp_class_loss, model.class_net.parameters(), allow_unused=True, only_inputs=True, create_graph=True)
-
-            fast_weights = []
-            for p_ix,tup in enumerate(model.class_net.named_parameters()):
-                n,par = tup
-                if 'bn_' in n or (FLAGS.only_final and 'predict_p' not in n):
-                    update_par = par
-                else:
-                    if 'predict_dw' in n:
-                        par_lr = learnable_lr[-2]
-                    elif 'predict_p' in n:
-                        par_lr = learnable_lr[-1]
+                fast_weights = []
+                for p_ix,tup in enumerate(model.class_net.named_parameters()):
+                    n,par = tup
+                    if 'bn_' in n or (FLAGS.only_final and 'predict_p' not in n):
+                        update_par = par
                     else:
-                        par_lr = learnable_lr[int(n[7])]
+                        if 'predict_dw' in n:
+                            par_lr = learnable_lr[-2]
+                        elif 'predict_p' in n:
+                            par_lr = learnable_lr[-1]
+                        else:
+                            par_lr = learnable_lr[int(n[7])]
 
-                    if inner_grad[p_ix] is None:
-                        print(n,"is None")
+                        if inner_grad[p_ix] is None:
+                            print(n,"is None")
 
-                    update_par = par - par_lr*inner_grad[p_ix]
+                        update_par = par - par_lr*inner_grad[p_ix]
 
-                fast_weights.append(update_par)
+                    fast_weights.append(update_par)
 
-        with torch.set_grad_enabled(not val_iter):
-            qry_class_out = model(qry_activs, fast_weights=fast_weights, mode='qry_cls')
-            #qry_box_out = [box_out.to('cuda:1') for box_out in qry_box_out]
-            qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
+            with torch.set_grad_enabled(not val_iter):
+                qry_class_out = model(qry_activs, fast_weights=fast_weights, mode='qry_cls')
+                #qry_box_out = [box_out.to('cuda:1') for box_out in qry_box_out]
+                qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
-        final_loss = qry_loss + FLAGS.conf_reg*conf_reg + FLAGS.proj_reg*proj_loss
-        if not val_iter:
-            final_loss.backward()
-
-        with torch.no_grad():
-            class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
-                num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
-
-            for b_ix in range(FLAGS.n_way*(FLAGS.num_zero_images+FLAGS.num_qry)):
-                detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
-                    None, qry_img_size, max_det_per_image=FLAGS.max_dets, soft_nms=False).cpu().numpy()
-                evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})
-                bboxes_yxyx = np.concatenate([detections[:,1:2],detections[:,0:1],detections[:,3:4],detections[:,2:3]],axis=1)
-                evaluator.add_single_detected_image_info(b_ix,{'bbox': bboxes_yxyx, 'scores': detections[:,4], 'cls': detections[:,5]})
-
-            map_metrics = evaluator.evaluate(task_cats)
+            final_loss = qry_loss + FLAGS.conf_reg*conf_reg + FLAGS.proj_reg*proj_loss
             if not val_iter:
-                iter_metrics['supp_class_loss'] += supp_class_loss
+                final_loss.backward()
+
+            with torch.no_grad():
+                class_out_post, box_out_post, indices, classes = _post_process(qry_class_out, qry_box_out, num_levels=model_config.num_levels, 
+                    num_classes=model_config.num_classes, max_detection_points=model_config.max_detection_points)
+
+                for b_ix in range(FLAGS.n_way*(FLAGS.num_zero_images+FLAGS.num_qry)):
+                    detections = generate_detections(class_out_post[b_ix], box_out_post[b_ix], anchors.boxes, indices[b_ix], classes[b_ix],
+                        None, qry_img_size, max_det_per_image=FLAGS.max_dets, soft_nms=False).cpu().numpy()
+                    evaluator.add_single_ground_truth_image_info(b_ix,{'bbox': qry_labs['bbox'][b_ix].numpy(), 'cls': qry_labs['cls'][b_ix].numpy()})
+                    bboxes_yxyx = np.concatenate([detections[:,1:2],detections[:,0:1],detections[:,3:4],detections[:,2:3]],axis=1)
+                    evaluator.add_single_detected_image_info(b_ix,{'bbox': bboxes_yxyx, 'scores': detections[:,4], 'cls': detections[:,5]})
+
+                map_metrics = evaluator.evaluate(task_cats)
+                if not val_iter:
+                    iter_metrics['supp_class_loss'] += supp_class_loss
+                    iter_metrics['proj_loss'] += proj_loss
+                    iter_metrics['proj_acc'] += proj_acc
+                    iter_metrics['num_valid'] += valid.sum()
+                    iter_metrics['min_clust'] += avg_init.min()
+                    iter_metrics['max_clust'] += avg_init.max()
+                    iter_metrics['supp_pos'] += supp_pos
+                    iter_metrics['supp_neg'] += supp_neg
+                    iter_metrics['conf_reg'] += conf_reg
+                    iter_metrics['qry_loss'] += final_loss
+                    iter_metrics['qry_class_loss'] += qry_class_loss
+                    iter_metrics['qry_bbox_loss'] += qry_box_loss
+                    iter_metrics['mAP'] += map_metrics['Precision/mAP@0.5IOU']
+                    iter_metrics['CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
+                    iter_metrics['conf_sum'] += confs_sum
+                    iter_metrics['med_conf_sum'] += med_conf_sum
+                    for metric_key in list(map_metrics.keys())[2:]:
+                        category_metrics[metric_key].append(map_metrics[metric_key])
+                    log_count += 1
+                else:
+                    val_metrics['val_supp_class_loss'] += supp_class_loss
+                    val_metrics['val_proj_loss'] += proj_loss
+                    val_metrics['val_proj_acc'] += proj_acc
+                    val_metrics['val_supp_pos'] += supp_pos
+                    val_metrics['val_supp_neg'] += supp_neg
+                    val_metrics['val_conf_reg'] += conf_reg
+                    val_metrics['val_qry_loss'] += final_loss
+                    val_metrics['val_qry_class_loss'] += qry_class_loss
+                    val_metrics['val_qry_bbox_loss'] += qry_box_loss
+                    val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
+                    val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
+                    val_metrics['val_conf_sum'] += confs_sum
+                    val_metrics['val_med_conf_sum'] += med_conf_sum
+                    for metric_key in list(map_metrics.keys())[2:]:
+                        category_metrics['val'+metric_key].append(map_metrics[metric_key])
+                    val_count += 1
+        else:
+            if not val_iter:
                 iter_metrics['proj_loss'] += proj_loss
                 iter_metrics['proj_acc'] += proj_acc
-                iter_metrics['num_valid'] += valid.sum()
-                iter_metrics['min_clust'] += avg_init.min()
-                iter_metrics['max_clust'] += avg_init.max()
-                iter_metrics['supp_pos'] += supp_pos
-                iter_metrics['supp_neg'] += supp_neg
-                iter_metrics['conf_reg'] += conf_reg
-                iter_metrics['qry_loss'] += final_loss
-                iter_metrics['qry_class_loss'] += qry_class_loss
-                iter_metrics['qry_bbox_loss'] += qry_box_loss
-                iter_metrics['mAP'] += map_metrics['Precision/mAP@0.5IOU']
-                iter_metrics['CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
-                iter_metrics['conf_sum'] += confs_sum
-                iter_metrics['med_conf_sum'] += med_conf_sum
-                for metric_key in list(map_metrics.keys())[2:]:
-                    category_metrics[metric_key].append(map_metrics[metric_key])
-                log_count += 1
             else:
-                val_metrics['val_supp_class_loss'] += supp_class_loss
                 val_metrics['val_proj_loss'] += proj_loss
-                val_metrics['val_supp_pos'] += supp_pos
-                val_metrics['val_supp_neg'] += supp_neg
-                val_metrics['val_conf_reg'] += conf_reg
-                val_metrics['val_qry_loss'] += final_loss
-                val_metrics['val_qry_class_loss'] += qry_class_loss
-                val_metrics['val_qry_bbox_loss'] += qry_box_loss
-                val_metrics['val_mAP'] += map_metrics['Precision/mAP@0.5IOU']
-                val_metrics['val_CorLoc'] += map_metrics['Precision/meanCorLoc@0.5IOU']
-                val_metrics['val_conf_sum'] += confs_sum
-                val_metrics['val_med_conf_sum'] += med_conf_sum
-                for metric_key in list(map_metrics.keys())[2:]:
-                    category_metrics['val'+metric_key].append(map_metrics[metric_key])
-                val_count += 1
+                val_metrics['val_proj_acc'] += proj_acc
+
+            final_loss = proj_loss
+            if not val_iter:
+                final_loss.backward()
 
         if (not val_iter and prev_val_iter):
             log_val = True
@@ -599,19 +603,24 @@ def main(argv):
             if t_ix < FLAGS.meta_batch_size: continue
             else: t_ix = 0
 
-            iter_meta_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),FLAGS.meta_clip)
-            iter_meta_norm += torch.nn.utils.clip_grad_norm_(proj_net.parameters(),FLAGS.meta_clip)
+            iter_meta_norm = torch.nn.utils.clip_grad_norm_(proj_net.parameters(),FLAGS.meta_clip)
+            if not FLAGS.proj_stop_grad:
+                iter_meta_norm += torch.nn.utils.clip_grad_norm_(model.parameters(),FLAGS.meta_clip)
+            
             meta_norm += iter_meta_norm
             print(train_iter,datetime.datetime.now(),"Meta Norm:",iter_meta_norm)
             #torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
             meta_optimizer.step()
             train_iter += 1
 
-            if 40 < train_iter < 42:
+            if 60 < train_iter < 62:
+                meta_optimizer.param_groups[2]['lr'] = FLAGS.meta_lr
+
+            if 80 < train_iter < 82:
                 meta_optimizer.param_groups[1]['lr'] = FLAGS.meta_lr
                 meta_optimizer.param_groups[2]['lr'] = FLAGS.meta_lr
                 meta_optimizer.param_groups[3]['lr'] = FLAGS.meta_lr
-
+                meta_optimizer.param_groups[4]['lr'] = FLAGS.meta_lr
 
         if log_val:
             #if not FLAGS.supp_alpha:
@@ -634,7 +643,7 @@ def main(argv):
                     np.save('per_cat_metrics/'+FLAGS.exp+key.replace('/','_')+str(train_iter)+'.npy',np.array(category_metrics[key]))
                     category_metrics[key] = []
 
-            val_metrics = {'val_supp_class_loss': 0., 'val_proj_loss':0., 'val_conf_reg':0., 'val_med_conf_sum':0., 'val_supp_pos':0.,'val_supp_neg':0., 
+            val_metrics = {'val_supp_class_loss': 0., 'val_proj_loss':0.,'val_proj_acc':0., 'val_conf_reg':0., 'val_med_conf_sum':0., 'val_supp_pos':0.,'val_supp_neg':0., 
                 'val_qry_loss': 0., 'val_qry_class_loss': 0., 'val_qry_bbox_loss': 0., 'val_mAP': 0., 'val_CorLoc': 0., 'val_conf_sum':0.}
             val_count = 0
             log_val = False
@@ -779,6 +788,35 @@ def main(argv):
 
             if not val_iter:
                 qry_loss.backward()'''
+
+
+    '''median_embd,med_conf_sum = proj_net.weighted_median(torch.cat(proj_embds,dim=0), (torch.cat(confs)*FLAGS.median_conf_factor + FLAGS.median_conf_add).sigmoid())
+                if FLAGS.norm_factor != 'None':
+                    norm_exp = float(FLAGS.norm_factor)
+                else:
+                    norm_exp = None
+
+                median_embd = F.normalize(median_embd, p=norm_exp, dim=1) if norm_exp is not None else median_embd
+                supp_losses,pos_sums,neg_sums = [],[],[]
+                confs_sum = 0.
+                conf_reg = 0.
+                for level_proj,level_conf_ch in zip(proj_embds, class_out):
+                    level_conf = level_conf_ch.movedim(1,3)
+                    norm_proj = F.normalize(level_proj, p=norm_exp, dim=1) if norm_exp is not None else level_proj
+                    dot_prod = torch.matmul(norm_proj, median_embd.t())
+                    target = proj_net.dot_mult*dot_prod.view(*level_conf.shape) + proj_net.dot_add
+                    conf_probs = level_conf.sigmoid()
+                    supp_loss, pos_grad_sum, neg_grad_sum = support_loss_fn(level_conf,target,weights=conf_probs,beta=FLAGS.beta)
+                    confs_sum += conf_probs.sum()
+                    supp_losses.append(supp_loss)
+                    pos_sums.append(pos_grad_sum)
+                    neg_sums.append(neg_grad_sum)
+                    conf_reg += ((level_conf[level_conf > 4.] - 4.)**2).sum()
+
+                supp_class_loss = sum(supp_losses)/confs_sum
+                conf_reg /= confs_sum
+                supp_pos = sum(pos_sums)
+                supp_neg = sum(neg_sums)'''
 
 if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn', force=True)
