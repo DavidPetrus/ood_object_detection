@@ -351,8 +351,7 @@ def main(argv):
         with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
             qry_activs, qry_box_out = model(feats,mode='not_cls')
 
-        #if not val_iter and FLAGS.proj_reg>0.:
-        if FLAGS.proj_reg>0.:
+        if not val_iter and FLAGS.proj_reg>0.:
             with torch.set_grad_enabled(not FLAGS.proj_stop_grad):
                 # Maybe only do top 3 levels?
                 class_out, obj_embds = model([qry_lev[:FLAGS.num_qry] for qry_lev in qry_activs], mode='qry_cls', ret_activs=True)
@@ -416,7 +415,7 @@ def main(argv):
         else:
             proj_loss = 0.
 
-        if train_iter > 1000:
+        if True:
             fast_weights = None
             for s in range(FLAGS.steps):
                 class_out, obj_embds = model(supp_activs, fast_weights=fast_weights, mode='supp_cls')
@@ -604,8 +603,7 @@ def main(argv):
             else: t_ix = 0
 
             iter_meta_norm = torch.nn.utils.clip_grad_norm_(proj_net.parameters(),FLAGS.meta_clip)
-            if not FLAGS.proj_stop_grad:
-                iter_meta_norm += torch.nn.utils.clip_grad_norm_(model.parameters(),FLAGS.meta_clip)
+            iter_meta_norm += torch.nn.utils.clip_grad_norm_(model.parameters(),FLAGS.meta_clip)
             
             meta_norm += iter_meta_norm
             print(train_iter,datetime.datetime.now(),"Meta Norm:",iter_meta_norm)
