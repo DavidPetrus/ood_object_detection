@@ -585,9 +585,11 @@ def main(argv):
             if not val_iter:
                 iter_metrics['proj_loss'] += proj_loss
                 iter_metrics['proj_acc'] += proj_acc
+                log_count += 1
             else:
                 val_metrics['val_proj_loss'] += proj_loss
                 val_metrics['val_proj_acc'] += proj_acc
+                val_count += 1
 
             final_loss = proj_loss
             if not val_iter:
