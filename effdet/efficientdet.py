@@ -695,9 +695,8 @@ class ProjectionNet(nn.Module):
         self.pos_enc = torch.stack(pos_enc).transpose(0,1).cuda()
 
         self.width = width
-        self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8, width), nn.ReLU(),
-                                        nn.Linear(width, width), nn.ReLU(),
-                                        nn.Linear(width, width))
+        self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8, width, bias=False), nn.ReLU(),
+                                        nn.Linear(width, int(width/2), bias=False))
 
     def weighted_median(self, embds, confs):
         conf_sum = confs.sum()
