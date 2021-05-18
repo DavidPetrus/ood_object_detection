@@ -859,12 +859,8 @@ class EfficientDet(nn.Module):
 
     def forward(self, x, fast_weights=None, ret_activs=False, mode='full_net'):
         if mode=='supp_cls':
-            if FLAGS.at_start:
-                x_class = self.class_net(x,level_offset=FLAGS.supp_level_offset)
-                return x_class, x
-            else:
-                x_class, anchor_inps = self.class_net(x,fast_weights=fast_weights,ret_activs=True,level_offset=FLAGS.supp_level_offset)
-                return x_class, anchor_inps
+            x_class, anchor_inps = self.class_net(x,fast_weights=fast_weights,ret_activs=True,level_offset=FLAGS.supp_level_offset)
+            return x_class, anchor_inps
         elif mode=='supp_bb':
             x = self.backbone(x)
             activs = self.fpn(x)
