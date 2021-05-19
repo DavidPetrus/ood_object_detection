@@ -54,13 +54,14 @@ flags.DEFINE_float('sim_thresh',0.7,'')
 flags.DEFINE_string('sim_target','max','')
 flags.DEFINE_bool('proj_all_objs',True,'')
 flags.DEFINE_string('weigh_sims','SG','')
+flags.DEFINE_float('obj_coeff',0.1,'')
 flags.DEFINE_integer('proj_iters',30000,'')
 flags.DEFINE_integer('proj_depth',2,'')
 flags.DEFINE_integer('proj_size',256,'')
 flags.DEFINE_bool('proj_stop_grad',False,'')
 flags.DEFINE_float('proj_reg',0.1,'')
 flags.DEFINE_float('proj_temp',0.1,'')
-flags.DEFINE_float('dot_mult',8.,'')
+flags.DEFINE_float('dot_mult',3.,'')
 flags.DEFINE_float('dot_add',3.,'')
 flags.DEFINE_bool('multi_inner',True,'')
 flags.DEFINE_bool('random_trans',True,'')
@@ -281,7 +282,7 @@ def main(argv):
     log_val = False
     prev_val_iter = False
     meta_norm = 0.
-    best_loss = 0.
+    best_loss = 10.
     #with torch.autograd.detect_anomaly():
     for task in loader:
         supp_imgs, supp_cls_labs, qry_imgs, qry_labs, proj_labs, task_cats, cls_id, val_iter = task
@@ -318,12 +319,16 @@ def main(argv):
                 for lr in learnable_lr:
                     lr.requires_grad = True
 
-        # Run test with grad enabled when training fpn!!
-        with torch.no_grad():
-            supp_activs = model(supp_imgs,mode='supp_bb')
+        if train_iter >= FLAGS.proj_iters:
+            # Run test with grad enabled when training fpn!!
+            with torch.no_grad():
+                supp_activs = model(supp_imgs,mode='supp_bb')
 
-        with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
-            feats= model(qry_imgs,mode='bb')
+            with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
+                feats= model(qry_imgs,mode='bb')
+        else:
+            with torch.set_grad_enabled(FLAGS.train_bb and not val_iter):
+                feats= model(qry_imgs[:FLAGS.num_qry],mode='bb')
 
         with torch.set_grad_enabled(FLAGS.train_fpn and not val_iter):
             qry_activs, qry_box_out = model(feats,mode='not_cls')
@@ -331,7 +336,7 @@ def main(argv):
         if (not val_iter or train_iter < FLAGS.proj_iters) and FLAGS.proj_reg>0.:
             with torch.set_grad_enabled(not FLAGS.proj_stop_grad and not val_iter):
                 # Maybe only do top 3 levels?
-                class_out, obj_embds = model(qry_activs[:FLAGS.num_qry], mode='qry_cls', ret_activs=True)
+                class_out, obj_embds = model(qry_activs, mode='qry_cls', ret_activs=True)
 
             with torch.set_grad_enabled(not val_iter):
                 proj_feed = []
@@ -387,7 +392,7 @@ def main(argv):
                     pair_logits[arange, pair_idxs] = sim_mat[arange, pair_idxs]
 
                     soft_thresh = proj_net.dot_mult*(confs + proj_net.dot_add)
-                    obj_target = (proj_labs > -1).long()
+                    obj_target = (proj_labs > -1).float()
                     obj_loss = F.binary_cross_entropy_with_logits(soft_thresh, obj_target)
                     if FLAGS.weigh_sims == 'SG':
                         soft_thresh = soft_thresh.detach().sigmoid()
@@ -519,7 +524,7 @@ def main(argv):
                 #qry_box_out = [box_out.to('cuda:1') for box_out in qry_box_out]
                 qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
-            final_loss = qry_loss + FLAGS.proj_reg*(proj_loss + obj_loss)
+            final_loss = qry_loss + FLAGS.proj_reg*(proj_loss + FLAGS.obj_coeff*obj_loss)
             if not val_iter:
                 final_loss.backward()
 
@@ -588,7 +593,7 @@ def main(argv):
                 val_metrics['val_obj_loss'] += obj_loss
                 val_count += 1
 
-            final_loss = proj_loss
+            final_loss = proj_loss + FLAGS.obj_coeff*obj_loss
             if not val_iter:
                 final_loss.backward()
 
