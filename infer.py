@@ -296,6 +296,8 @@ def main(argv):
     evaluator = ObjectDetectionEvaluator([{'id':1,'name':'a'}], evaluate_corlocs=True)
     category_metrics = defaultdict(list)
 
+    best_loss = 10.
+
     iter_metrics = {'supp_class_loss': 0., 'proj_loss':0., 'dot_mult':0.,'dot_add':0.,'obj_sim':0.,'rest_loss':0.,'99th':0.,'99.9th':0., 'proj_acc':0.,
                 'conf_reg':0.,'med_conf_sum':0.,'supp_pos':0.,'supp_neg':0.,'qry_loss': 0., 
                 'qry_class_loss': 0., 'qry_bbox_loss': 0., 'mAP': 0., 'CorLoc': 0., 'conf_sum':0., 'num_valid':0., 'min_clust':0., 'max_clust':0.}
@@ -650,6 +652,12 @@ def main(argv):
             #torch.nn.utils.clip_grad_norm_(model.parameters(),10.)
             meta_optimizer.step()
             train_iter += 1
+
+            if final_loss < best_loss and train_iter > 0:
+                best_loss = final_loss
+                torch.save(model.state_dict(),'class_best.pt')
+                torch.save(proj_net.state_dict(),'proj_best.pt')
+
 
             '''if 60 < train_iter < 62:
                 meta_optimizer.param_groups[2]['lr'] = FLAGS.meta_lr
