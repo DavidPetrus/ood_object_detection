@@ -53,7 +53,7 @@ flags.DEFINE_float('meta_clip',10.,'')
 flags.DEFINE_float('sim_thresh',0.7,'')
 flags.DEFINE_string('sim_target','max','')
 flags.DEFINE_bool('proj_all_objs',True,'')
-flags.DEFINE_integer('proj_iters',10000,'')
+flags.DEFINE_integer('proj_iters',0,'')
 flags.DEFINE_integer('proj_depth',2,'')
 flags.DEFINE_integer('proj_size',256,'')
 flags.DEFINE_bool('proj_stop_grad',False,'')
@@ -187,6 +187,11 @@ def main(argv):
     num_anchs = int(len(model_config.aspect_ratios) * model_config.num_scales)
 
     proj_net = ProjectionNet(model_config, FLAGS.proj_size)
+
+    state_dict = torch.load("class_best.pt")
+    model.load_state_dict(state_dict, strict=True)
+    state_dict = torch.load("proj_best.pt")
+    proj_net.load_state_dict(state_dict, strict=True)
 
     anchors = Anchors.from_config(model_config).to('cuda')
 
@@ -435,9 +440,11 @@ def main(argv):
                 proj_embds = F.normalize(proj_embds, p=2)
                 sim_mat = torch.matmul(proj_embds, proj_embds.t())
                 conf_logits = torch.cat(confs, dim=1).reshape(-1)
-                soft_thresh = proj_net.dot_mult*(conf_logits.reshape(-1) + proj_net.dot_add)
-                soft_thresh = soft_thresh.sigmoid()
-                conf_mat = torch.matmul(soft_thresh.view(-1,1), soft_thresh.view(1,-1))
+                with torch.no_grad():
+                    soft_thresh = proj_net.dot_mult*(conf_logits + proj_net.dot_add)
+                    soft_thresh = soft_thresh.sigmoid()
+                    conf_mat = torch.matmul(soft_thresh.view(-1,1), soft_thresh.view(1,-1))
+
                 weighted_sim = conf_mat*sim_mat# - 1000.*torch.eye(sim_mat.shape[0], device='cuda')
                 weighted_sim = weighted_sim.reshape(FLAGS.num_sup, -1, sim_mat.shape[0])
 
@@ -598,7 +605,7 @@ def main(argv):
             #    inner_alpha_log = 0.
             #else:
             #    inner_alpha_log = anchor_net.alpha.data if FLAGS.learn_alpha else anchor_net.alpha
-            log_metrics = {'iteration':train_iter,'proj_mult':proj_net.dot_mult.data,'proj_add':proj_net.dot_add.data}
+            log_metrics = {'iteration':train_iter}
             for lr_ix,lr in enumerate(learnable_lr):
                 log_metrics['inner'+str(lr_ix)] = lr.data
             
