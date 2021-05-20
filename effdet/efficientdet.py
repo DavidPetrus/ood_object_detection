@@ -687,23 +687,41 @@ class ProjectionNet(nn.Module):
 
         locs = torch.arange(start=-1.,end=1.,step=1/8)*3.14159
         locs = locs[:9]
-        pos_enc = []
+        anch_enc = []
         for freq in range(4):
-            pos_enc.append(torch.sin(2**freq * locs))
-            pos_enc.append(torch.cos(2**freq * locs))
+            anch_enc.append(torch.sin(2**freq * locs))
+            anch_enc.append(torch.cos(2**freq * locs))
 
-        self.pos_enc = torch.stack(pos_enc).transpose(0,1).cuda()
+        self.anch_enc = torch.stack(anch_enc).transpose(0,1).cuda()
+
+        locs = torch.arange(start=-1.,end=1.,step=1/64)*3.14159
+        locs = locs[:80]
+        cell_enc = []
+        for freq in range(7):
+            cell_enc.append(torch.sin(2**freq * locs))
+            cell_enc.append(torch.cos(2**freq * locs))
+
+        self.cell_enc = torch.stack(cell_enc).transpose(0,1).cuda()
+
+        locs = torch.arange(start=-1.,end=1.,step=1/4)*3.14159
+        locs = locs[:5]
+        lev_enc = []
+        for freq in range(3):
+            lev_enc.append(torch.sin(2**freq * locs))
+            lev_enc.append(torch.cos(2**freq * locs))
+
+        self.lev_enc = torch.stack(lev_enc).transpose(0,1).cuda()
 
         self.width = width
         if FLAGS.proj_depth == 2:
-            self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8, width, bias=False), nn.ReLU(),
+            self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8+28+6, width, bias=False), nn.ReLU(),
                                             nn.Linear(width, int(width/2), bias=False))
         elif FLAGS.proj_depth == 3:
-            self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8, width, bias=False), nn.ReLU(),
+            self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8+28+6, width, bias=False), nn.ReLU(),
                                             nn.Linear(width, width, bias=False), nn.ReLU(),
                                             nn.Linear(width, int(width/2), bias=False))
         elif FLAGS.proj_depth == 4:
-            self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8, width, bias=False), nn.ReLU(),
+            self.projection = nn.Sequential(nn.Linear(config.fpn_channels+8+28+6, width, bias=False), nn.ReLU(),
                                             nn.Linear(width, width, bias=False), nn.ReLU(),
                                             nn.Linear(width, width, bias=False), nn.ReLU(),
                                             nn.Linear(width, int(width/2), bias=False))
