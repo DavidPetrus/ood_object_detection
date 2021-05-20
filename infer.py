@@ -49,12 +49,14 @@ flags.DEFINE_integer('img_size',256,'')
 flags.DEFINE_integer('pretrain_classes',400,'')
 
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
+flags.DEFINE_bool('separate_head',True,'')
 flags.DEFINE_float('meta_clip',10.,'')
 flags.DEFINE_float('sim_thresh',0.7,'')
 flags.DEFINE_string('sim_target','max','')
+flags.DEFINE_bool('inner_thresh_train',False,'')
 flags.DEFINE_bool('proj_all_objs',True,'')
-flags.DEFINE_string('weigh_sims','True','')
-flags.DEFINE_float('proj_coeff',0.001,'')
+flags.DEFINE_bool('proj_sig',True,'')
+flags.DEFINE_float('proj_coeff',1.,'')
 flags.DEFINE_float('obj_coeff',0.001,'')
 flags.DEFINE_integer('proj_iters',30000,'')
 flags.DEFINE_integer('proj_depth',2,'')
@@ -195,6 +197,9 @@ def main(argv):
     #model.load_state_dict(state_dict, strict=True)
     #state_dict = torch.load("proj_best.pt")
     #proj_net.load_state_dict(state_dict, strict=True)
+
+    if FLAGS.separate_head:
+        model.class_net.add_head()
 
     anchors = Anchors.from_config(model_config).to('cuda')
 
@@ -387,45 +392,46 @@ def main(argv):
                     proj_embds = F.normalize(proj_embds, p=2)
                     proj_labs = proj_labs[shuffled_idxs]
                     task_obj_idxs = task_obj_idxs[shuffled_idxs]
-                    sim_mat = torch.matmul(proj_embds[task_obj_idxs], proj_embds.t()) / FLAGS.proj_temp
+                    sim_mat = torch.matmul(proj_embds[task_obj_idxs], proj_embds.t())
                     mask = torch.logical_and(proj_labs.view(-1,1) == proj_labs.view(1,-1), proj_labs.view(1,-1)==cls_id)
-                    sim_nonzero = sim_mat[sim_mat > 0.]
-                    proj_target = mask[task_obj_idxs][sim_mat > 0.].float()
-                    proj_loss = F.binary_cross_entropy_with_logits(sim_nonzero, proj_target, reduction='mean')
-
-                    #triu_mask = torch.triu(mask, diagonal=1)[task_obj_idxs]
-                    #pair_idxs = torch.argmax(triu_mask.long(), dim=1)
-                    #mask = mask[task_obj_idxs]
-                    #pair_idxs[-1] = torch.argmax(mask[-1].long(), dim=0)
-
-                    #pair_logits = torch.where(mask, torch.tensor(-100000.,dtype=torch.float32, device='cuda'), sim_mat)
-                    #arange = torch.arange(0,mask.shape[0],device='cuda')
-                    #pair_logits[arange, pair_idxs] = sim_mat[arange, pair_idxs]
-
                     soft_thresh = proj_net.dot_mult*(confs + proj_net.dot_add)
+                    if FLAGS.proj_sig:
+                        soft_thresh_sig = soft_thresh.sigmoid()
+                        thresh_mat = torch.matmul(soft_thresh_sig[task_obj_idxs].reshape(-1,1),soft_thresh_sig.reshape(1,-1))
+                        pos_sims = sim_mat > 0.
+                        sim_nonzero = sim_mat[pos_sims]
+                        proj_target = mask[task_obj_idxs][pos_sims].float()
+                        proj_loss = F.binary_cross_entropy_with_logits(sim_nonzero*thresh_mat[pos_sims], proj_target, reduction='mean')
+
+                        with torch.no_grad():
+                            weighted_sims = sim_mat*thresh_mat
+                            proj_acc = 0.
+                            q_999 = torch.quantile(weighted_sims[~mask[task_obj_idxs]],0.999)
+                            q_99 = torch.quantile(weighted_sims[~mask[task_obj_idxs]],0.99)
+                            task_obj_loss = weighted_sims[mask[task_obj_idxs]].mean()
+                    else:
+                        sim_mat = sim_mat/FLAGS.proj_temp
+                        triu_mask = torch.triu(mask, diagonal=1)[task_obj_idxs]
+                        pair_idxs = torch.argmax(triu_mask.long(), dim=1)
+                        mask = mask[task_obj_idxs]
+                        pair_idxs[-1] = torch.argmax(mask[-1].long(), dim=0)
+                        pair_logits = torch.where(mask, torch.tensor(-100000.,dtype=torch.float32, device='cuda'), sim_mat)
+                        arange = torch.arange(0,mask.shape[0],device='cuda')
+                        pair_logits[arange, pair_idxs] = sim_mat[arange, pair_idxs]
+                        soft_thresh = soft_thresh.sigmoid()
+                        proj_loss = F.cross_entropy(soft_thresh*pair_logits, pair_idxs, reduction='mean')
+
+                        with torch.no_grad():
+                            thresh_mat = torch.matmul(soft_thresh[task_obj_idxs].reshape(-1,1),soft_thresh.reshape(1,-1))
+                            weighted_sims = sim_mat*thresh_mat
+                            proj_acc = (torch.argmax(weighted_sims, dim=1)==pair_idxs).float().mean()
+                            q_999 = torch.quantile(weighted_sims[~mask],0.999)*FLAGS.proj_temp
+                            q_99 = torch.quantile(weighted_sims[~mask],0.99)*FLAGS.proj_temp
+                            task_obj_loss = weighted_sims[mask].mean()*FLAGS.proj_temp
+                    
                     obj_target = (proj_labs > -1).float()
                     obj_loss = F.binary_cross_entropy_with_logits(soft_thresh, obj_target, reduction='sum')
-                    '''if FLAGS.weigh_sims == 'SG':
-                        soft_thresh = soft_thresh.detach().sigmoid()
-                        proj_loss = F.cross_entropy(soft_thresh*pair_logits, pair_idxs, reduction='mean')
-                    elif FLAGS.weigh_sims == 'True':
-                        soft_thresh = soft_thresh.sigmoid()
-                        proj_loss = F.cross_entropy(soft_thresh*pair_logits, pair_idxs, reduction='mean')
-                    elif FLAGS.weigh_sims == 'False':
-                        soft_thresh = soft_thresh.detach().sigmoid()
-                        proj_loss = F.cross_entropy(pair_logits, pair_idxs, reduction='mean')'''
-                
-                    with torch.no_grad():
-                        soft_thresh = soft_thresh.sigmoid()
-                        thresh_mat = torch.matmul(soft_thresh[task_obj_idxs].reshape(-1,1),soft_thresh.reshape(1,-1))
-                        weighted_sims = sim_mat*thresh_mat
-                        #proj_acc = (torch.argmax(weighted_sims, dim=1)==pair_idxs).float().mean()
-                        proj_acc = 0.
-                        q_999 = torch.quantile(weighted_sims[~mask[task_obj_idxs]],0.999)*FLAGS.proj_temp
-                        q_99 = torch.quantile(weighted_sims[~mask[task_obj_idxs]],0.99)*FLAGS.proj_temp
-                        task_obj_loss = weighted_sims[mask[task_obj_idxs]].mean()*FLAGS.proj_temp
-                        rest_loss = 0.
-                    #print(proj_loss, obj_loss, proj_acc, task_obj_loss, q_999, q_99)
+                    print(proj_loss, obj_loss, proj_acc, task_obj_loss, q_999, q_99)
                 else:
                     meta_optimizer.zero_grad()
                     continue
@@ -439,12 +445,17 @@ def main(argv):
 
                 proj_embds = []
                 confs = []
-                for level_embds,level_conf in zip(obj_embds, class_out):
-                    trans_embds = level_embds.movedim(1,3)
-                    flat_embds = trans_embds.reshape(-1, model_config.fpn_channels)
-                    pos_enc = proj_net.pos_enc.repeat(flat_embds.shape[0], 1)
+                for level_embds_c,level_conf in zip(obj_embds, class_out):
+                    level_embds = level_embds_c.movedim(1,3)
+                    lev_enc = proj_net.lev_enc[level_ix].reshape(1,1,-1).repeat(level_embds.shape[0],level_embds.shape[1],level_embds.shape[2],1).reshape(-1, 6)
+                    cell_enc = proj_net.cell_enc[:level_embds.shape[1]].reshape(1,level_embds.shape[1],1,14).repeat(level_embds.shape[0],1,level_embds.shape[2],1)
+                    cell_enc = torch.cat([cell_enc, cell_enc.movedim(1,2)], dim=2).reshape(-1,14*2)
+                    flat_embds = level_embds.reshape(-1, model_config.fpn_channels)
+                    anch_enc = proj_net.anch_enc.repeat(flat_embds.shape[0], 1)
                     rep_embds = flat_embds.repeat_interleave(num_anchs, dim=0)
-                    feed_embds = torch.cat([rep_embds,pos_enc], dim=1)
+                    lev_enc = lev_enc.repeat_interleave(num_anchs, dim=0)
+                    cell_enc = cell_enc.repeat_interleave(num_anchs, dim=0)
+                    feed_embds = torch.cat([rep_embds,anch_enc,lev_enc,cell_enc], dim=1)
 
                     res_conf = level_conf.movedim(1,3).reshape(FLAGS.num_sup,-1)
                     if level_conf.shape[2] <= 4:
@@ -471,26 +482,26 @@ def main(argv):
                 proj_embds = F.normalize(proj_embds, p=2)
                 sim_mat = torch.matmul(proj_embds, proj_embds.t())
                 conf_logits = torch.cat(confs, dim=1).reshape(-1)
-                with torch.no_grad():
+                with torch.set_grad_enabled(FLAGS.inner_thresh_train):
                     soft_thresh = proj_net.dot_mult*(conf_logits + proj_net.dot_add)
                     soft_thresh = soft_thresh.sigmoid()
-                    conf_mat = torch.matmul(soft_thresh.view(-1,1), soft_thresh.view(1,-1))
+                    thresh_mat = torch.matmul(soft_thresh.view(-1,1), soft_thresh.view(1,-1))
 
-                weighted_sim = conf_mat*sim_mat# - 1000.*torch.eye(sim_mat.shape[0], device='cuda')
+                weighted_sim = thresh_mat*sim_mat# - 1000.*torch.eye(sim_mat.shape[0], device='cuda')
                 weighted_sim = weighted_sim.reshape(FLAGS.num_sup, -1, sim_mat.shape[0])
 
                 img_avg_sims_all = weighted_sim.mean(2)
                 max_idxs = torch.argmax(img_avg_sims_all,dim=1)
-                print(torch.gather(img_avg_sims_all, 1, max_idxs.reshape(1,-1)))
-                mean_sim = sim_mat.reshape(FLAGS.num_sup, -1, sim_mat.shape[0]).mean(2)
-                mean_conf = conf_mat.reshape(FLAGS.num_sup, -1, sim_mat.shape[0]).mean(2)
-                print(torch.gather(mean_sim, 1, max_idxs.reshape(1,-1)))
-                print(torch.gather(mean_conf, 1, max_idxs.reshape(1,-1)))
+                #print(torch.gather(img_avg_sims_all, 1, max_idxs.reshape(1,-1)))
+                #mean_sim = sim_mat.reshape(FLAGS.num_sup, -1, sim_mat.shape[0]).mean(2)
+                #mean_conf = thresh_mat.reshape(FLAGS.num_sup, -1, sim_mat.shape[0]).mean(2)
+                #print(torch.gather(mean_sim, 1, max_idxs.reshape(1,-1)))
+                #print(torch.gather(mean_conf, 1, max_idxs.reshape(1,-1)))
                 arange = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda')
                 max_idxs = arange + max_idxs
                 init_cluster = sim_mat[max_idxs][:,max_idxs]
                 avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
-                print(avg_init)
+                #print(avg_init)
                 valid = avg_init > FLAGS.sim_thresh
                 #print(valid.sum())
 
@@ -498,16 +509,21 @@ def main(argv):
                 max_idxs = torch.argmax(img_avg_sims_clust, dim=1)
                 max_idxs = arange + max_idxs
                 init_cluster = sim_mat[max_idxs][:,max_idxs]
-                avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
+                with torch.no_grad():
+                    avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
                 #print(avg_init.min())
                 print(soft_thresh.sum())
 
                 if FLAGS.sim_target == 'max':
                     all_max_sims_clust, all_max_idxs = torch.max(sim_mat[:,max_idxs], dim=1)
+                    print(all_max_sims_clust.max(), all_max_sims_clust.min())
                     target = (soft_thresh * torch.gather(init_cluster, 1, all_max_idxs.reshape(1,-1)) * all_max_sims_clust).reshape(-1)
                 elif FLAGS.sim_target == 'avg':
                     all_avg_sims_clust = sim_mat[:,max_idxs].mean(1)
+                    print(all_avg_sims_clust.max(), all_avg_sims_clust.min())
                     target = soft_thresh * all_avg_sims_clust
+
+                print(target.max(), target.min())
 
                 supp_class_loss = F.binary_cross_entropy_with_logits(conf_logits, target)
 

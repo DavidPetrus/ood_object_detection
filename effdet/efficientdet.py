@@ -575,8 +575,8 @@ class MetaHead(nn.Module):
         norm_layer = config.norm_layer or nn.BatchNorm2d
         
         in_channels = config.fpn_channels
-        num_channels = num_channels_flag or config.fpn_channels
-        num_anchors = len(config.aspect_ratios) * config.num_scales
+        self.num_channels = num_channels = num_channels_flag or config.fpn_channels
+        self.num_anchors = num_anchors = len(config.aspect_ratios) * config.num_scales
 
         '''self.conv_dw_rep = nn.ParameterList([nn.Parameter(torch.randn((in_channels,in_channels,3,3))*((1/in_channels)**0.5))] +
             [nn.Parameter(torch.randn((num_channels,num_channels,3,3))*((1/num_channels)**0.5)) for _ in range(FLAGS.num_conv-1)])
@@ -637,11 +637,17 @@ class MetaHead(nn.Module):
                 setattr(self, "bn_b{}{}".format(rep,lev), nn.Parameter(pretrain_init['class_net.bn_rep.{}.{}.bn.bias'.format(rep,lev)]))
                 self.bn_rep_b.append(getattr(self, "bn_b{}{}".format(rep,lev)))
 
+    def add_head(self):
+        predict_pw = nn.Parameter(torch.randn((self.num_anchors,self.num_channels,1,1))*((1/self.num_channels)**0.5))
+        predict_pb = nn.Parameter(torch.full([self.num_anchors],-math.log((1 - 0.01) / 0.01)))
+        self.predict_class = [self.predict_dw, predict_pw, predict_pb]
 
-    def forward(self, x, fast_weights=None, ret_activs=False, level_offset=0):
+    def forward(self, x, fast_weights=None, ret_activs=False, level_offset=0, anch_head=True):
         if fast_weights is None:
             conv_dw_rep, conv_pw_rep, conv_pb_rep = self.conv_dw_rep, self.conv_pw_rep, self.conv_pb_rep
             bn_rep_w, bn_rep_b, predict = self.bn_rep_w, self.bn_rep_b, self.predict
+            if not anch_head and FLAGS.separate_head:
+                predict = self.predict_class
         else:
             conv_dw_rep = fast_weights[:self.num_layers]
             conv_pw_rep = fast_weights[self.num_layers:2*self.num_layers]
@@ -649,7 +655,6 @@ class MetaHead(nn.Module):
             predict = fast_weights[3*self.num_layers:3*self.num_layers+3]
             bn_rep_w = fast_weights[3*self.num_layers+3:3*self.num_layers+3 + self.num_layers*self.num_levels]
             bn_rep_b = fast_weights[3*self.num_layers+3 + self.num_layers*self.num_levels:]
-            
             
         outputs = []
         if ret_activs: activs = []
@@ -877,7 +882,7 @@ class EfficientDet(nn.Module):
 
     def forward(self, x, fast_weights=None, ret_activs=False, mode='full_net'):
         if mode=='supp_cls':
-            x_class, anchor_inps = self.class_net(x,fast_weights=fast_weights,ret_activs=True,level_offset=FLAGS.supp_level_offset)
+            x_class, anchor_inps = self.class_net(x,fast_weights=fast_weights,ret_activs=True,level_offset=FLAGS.supp_level_offset, anch_head=False)
             return x_class, anchor_inps
         elif mode=='supp_bb':
             x = self.backbone(x)
@@ -891,7 +896,7 @@ class EfficientDet(nn.Module):
             x_box = self.box_net([activ.to('cuda') for activ in activs])
             return activs, x_box
         elif mode=='qry_cls':
-            x_class = self.class_net(x,fast_weights=fast_weights, ret_activs=ret_activs)
+            x_class = self.class_net(x,fast_weights=fast_weights, ret_activs=ret_activs, anch_head=anch_head)
             return x_class
         elif mode=='full_net':
             x = self.backbone(x)
