@@ -638,9 +638,9 @@ class MetaHead(nn.Module):
                 self.bn_rep_b.append(getattr(self, "bn_b{}{}".format(rep,lev)))
 
     def add_head(self):
-        predict_pw = nn.Parameter(torch.randn((self.num_anchors,self.num_channels,1,1))*((1/self.num_channels)**0.5))
-        predict_pb = nn.Parameter(torch.full([self.num_anchors],-math.log((1 - 0.01) / 0.01)))
-        self.predict_class = [self.predict_dw, predict_pw, predict_pb]
+        self.predict_pw_sep = nn.Parameter(torch.randn((self.num_anchors,self.num_channels,1,1))*((1/self.num_channels)**0.5))
+        self.predict_pb_sep = nn.Parameter(torch.full([self.num_anchors],-math.log((1 - 0.01) / 0.01)))
+        self.predict_class = [self.predict_dw, predict_pw_sep, predict_pb_sep]
 
     def forward(self, x, fast_weights=None, ret_activs=False, level_offset=0, anch_head=True):
         if fast_weights is None:

@@ -56,14 +56,14 @@ flags.DEFINE_string('sim_target','max','')
 flags.DEFINE_bool('inner_thresh_train',False,'')
 flags.DEFINE_bool('proj_all_objs',True,'')
 flags.DEFINE_bool('proj_sig',True,'')
-flags.DEFINE_float('proj_coeff',1.,'')
-flags.DEFINE_float('obj_coeff',0.001,'')
-flags.DEFINE_integer('proj_iters',30000,'')
+flags.DEFINE_float('proj_coeff',30.,'')
+flags.DEFINE_float('obj_coeff',0.0001,'')
+flags.DEFINE_integer('proj_iters',0,'')
 flags.DEFINE_integer('proj_depth',2,'')
 flags.DEFINE_integer('proj_size',512,'')
 flags.DEFINE_bool('proj_stop_grad',False,'')
-flags.DEFINE_float('proj_reg',0.1,'')
-flags.DEFINE_float('proj_temp',1,'')
+flags.DEFINE_float('proj_reg',0.03,'')
+flags.DEFINE_float('proj_temp',0.05,'')
 flags.DEFINE_float('dot_mult',3.,'')
 flags.DEFINE_float('dot_add',3.,'')
 flags.DEFINE_bool('multi_inner',True,'')
@@ -254,12 +254,22 @@ def main(argv):
     #learnable_lr = higher.optim.get_trainable_opt_params(inner_optimizer, device='cuda')['lr']
     print(len(learnable_lr))
 
-    class_pars = [par for n,par in model.class_net.named_parameters() if n not in ['predict_pw', 'predict_pb']]
-    predict_pars = [par for n,par in model.class_net.named_parameters() if n in ['predict_pw', 'predict_pb']]
-    meta_param_groups = [{'params': predict_pars,'lr':FLAGS.meta_lr},
-        {'params': class_pars,'lr':FLAGS.meta_lr},
-        {'params': proj_net.parameters(),'lr':FLAGS.meta_lr},
-        {'params':learnable_lr,'lr':0.}]
+    if FLAGS.separate_head:
+        class_pars = [par for n,par in model.class_net.named_parameters() if n not in ['predict_pw_sep', 'predict_pb_sep']]
+        predict_pars = [par for n,par in model.class_net.named_parameters() if n in ['predict_pw_sep', 'predict_pb_sep']]
+    else:
+        class_pars = [par for n,par in model.class_net.named_parameters() if n not in ['predict_pw', 'predict_pb']]
+        predict_pars = [par for n,par in model.class_net.named_parameters() if n in ['predict_pw', 'predict_pb']]
+    if FLAGS.separate_head:
+        meta_param_groups = [{'params': predict_pars,'lr':FLAGS.meta_lr},
+            {'params': class_pars,'lr':0.},
+            {'params': proj_net.parameters(),'lr':0.},
+            {'params':learnable_lr,'lr':0.}]
+    else:
+        meta_param_groups = [{'params': predict_pars,'lr':FLAGS.meta_lr},
+            {'params': class_pars,'lr':FLAGS.meta_lr},
+            {'params': proj_net.parameters(),'lr':FLAGS.meta_lr},
+            {'params':learnable_lr,'lr':0.}]
 
 
     #{'params': list(model.backbone.parameters())+list(model.fpn.parameters())+list(model.box_net.parameters()),'lr':0.}
@@ -532,7 +542,7 @@ def main(argv):
                 fast_weights = []
                 for p_ix,tup in enumerate(model.class_net.named_parameters()):
                     n,par = tup
-                    if 'bn_' in n or (FLAGS.only_final and 'predict_p' not in n):
+                    if 'bn_' in n or (FLAGS.only_final and 'predict_p' not in n) or (FLAGS.separate_head and 'predict_p' in n and 'sep' not in n):
                         update_par = par
                     else:
                         if 'predict_dw' in n:
@@ -554,7 +564,7 @@ def main(argv):
                 #qry_box_out = [box_out.to('cuda:1') for box_out in qry_box_out]
                 qry_loss, qry_class_loss, qry_box_loss = loss_fn(qry_class_out, qry_box_out, qry_cls_anchors, qry_bbox_anchors, qry_num_positives)
 
-            final_loss = qry_loss + FLAGS.proj_reg*(proj_loss + FLAGS.obj_coeff*obj_loss)
+            final_loss = qry_loss + FLAGS.proj_reg*(FLAGS.proj_coeff*proj_loss + FLAGS.obj_coeff*obj_loss)
             if not val_iter:
                 final_loss.backward()
 
