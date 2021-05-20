@@ -294,6 +294,57 @@ def loss_fn(
 
 #loss_jit = torch.jit.script(loss_fn)
 
+def box_only_loss(
+        box_outputs: List[torch.Tensor],
+        box_targets: List[torch.Tensor],
+        num_positives: torch.Tensor,
+        alpha: float,
+        gamma: float,
+        delta: float,
+        box_loss_weight: float,
+        label_smoothing: float = 0.,
+        legacy_focal: bool = False) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Computes total detection loss.
+    Computes total detection loss including box and class loss from all levels.
+    Args:
+        cls_outputs: a List with values representing logits in [batch_size, height, width, num_anchors].
+            at each feature level (index)
+
+        box_outputs: a List with values representing box regression targets in
+            [batch_size, height, width, num_anchors * 4] at each feature level (index)
+
+        cls_targets: groundtruth class targets.
+
+        box_targets: groundtrusth box targets.
+
+        num_positives: num positive grountruth anchors
+
+    Returns:
+        total_loss: an integer tensor representing total loss reducing from class and box losses from all levels.
+
+        cls_loss: an integer tensor representing total class loss.
+
+        box_loss: an integer tensor representing total box regression loss.
+    """
+    # Sum all positives in a batch for normalization and avoid zero
+    # num_positives_sum, which would lead to inf loss during training
+    num_positives_sum = (num_positives.sum() + 1.0)
+    levels = len(box_outputs)
+
+    box_losses = []
+    for l in range(levels):
+        box_targets_at_level = box_targets[l]
+
+        box_losses.append(_box_loss(
+            box_outputs[l].permute(0, 2, 3, 1),
+            box_targets_at_level,
+            num_positives_sum,
+            delta=delta))
+
+    box_loss = torch.sum(torch.stack(box_losses, dim=-1), dim=-1)
+    total_loss = box_loss_weight * box_loss
+    return total_loss
+
 
 class DetectionLoss(nn.Module):
 
@@ -310,6 +361,19 @@ class DetectionLoss(nn.Module):
         self.label_smoothing = config.label_smoothing
         self.legacy_focal = config.legacy_focal
         self.use_jit = config.jit_loss
+
+    def box_loss(
+            self,
+            box_outputs: List[torch.Tensor],
+            box_targets: List[torch.Tensor],
+            num_positives: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+
+        l_fn = box_only_loss
+
+        return l_fn(
+            box_outputs, box_targets, num_positives,
+            alpha=self.alpha, gamma=self.gamma, delta=self.delta,
+            box_loss_weight=self.box_loss_weight, label_smoothing=self.label_smoothing, legacy_focal=self.legacy_focal)
 
     def forward(
             self,
