@@ -65,6 +65,8 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
 
         self.transform = transforms_coco_eval(self.qry_img_size,interpolation='bilinear',use_prefetcher=True)
 
+        self.proj_transform = transforms_projection(self.supp_size,interpolation='bilinear',use_prefetcher=True)
+
     def __iter__(self):
         val_count = 1
         num_val_iters = 0
@@ -89,6 +91,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             supp_cls_lab = []
             qry_bbox_ls = []
             qry_cls_ls = []
+            proj_img_batch = []
             proj_bbox_ls = []
             proj_cls_ls = []
             if val_iter:
@@ -160,8 +163,11 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                     qry_bbox_ls.append(torch.from_numpy(target['bbox'][cat_idxs]))
                     qry_cls_ls.append(torch.from_numpy(np.ones(len(cat_idxs),dtype=target['cls'].dtype)))
 
-                    proj_bbox_ls.append(torch.from_numpy(target['bbox']))
-                    proj_cls_ls.append(torch.from_numpy(target['cls']+1))
+                    target['cls_id'] = task_cls_id
+                    proj_trans,proj_target = self.proj_transform(img_trans,target)
+                    proj_img_batch.append(torch.from_numpy(proj_trans))
+                    proj_bbox_ls.append(torch.from_numpy(proj_target['bbox']))
+                    proj_cls_ls.append(torch.from_numpy(proj_target['cls']+1))
 
             z_ix = 0
             while z_ix < self.num_zero:
@@ -202,7 +208,8 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             proj_lab_batch = {'cls':proj_cls_ls, 'bbox': proj_bbox_ls, 'cls_anchor':p_cls_targets, 'bbox_anchor':p_box_targets, 'num_positives':p_num_positives}
 
             #yield list(map(torch.stack, zip(*support_img_batch))), supp_cls_lab, list(map(torch.stack, zip(*query_img_batch))), query_lab_batch, task_cats, val_iter
-            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, proj_lab_batch, task_cats, task_cls_id, val_iter
+            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, torch.stack(proj_img_batch), proj_lab_batch, 
+                task_cats, task_cls_id, val_iter
 
 
 def load_metadata_dicts(base_path):

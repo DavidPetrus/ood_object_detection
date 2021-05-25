@@ -106,6 +106,55 @@ class ResizePad:
 
         return new_img, anno
 
+class ProjResizePad:
+
+    def __init__(self, target_size: int, scale: tuple = (0.2, 2.), interpolation: str = 'random',
+                 fill_color: tuple = (0, 0, 0)):
+        self.target_size = _size_tuple(target_size)
+        self.scale = scale
+        if interpolation == 'random':
+            self.interpolation = _RANDOM_INTERPOLATION
+        else:
+            self.interpolation = _pil_interp(interpolation)
+        self.fill_color = fill_color
+
+
+    def __call__(self, img, anno: dict, scale=None):
+        print("------------------------")
+        print(anno['bbox'])
+        print(anno['cls'])
+        task_id = anno['cls_id']
+        obj_bbox = np.random.choice(anno['bbox'][(anno['cls'] == task_id)],1)[0]
+        width, height = (obj_bbox[3]-obj_bbox[1], obj_bbox[2]-obj_bbox[0])
+        x_crops = (int(max(0.0,  obj_bbox[1] - width*random.uniform(0, 2))), int(min(img.size[0],  obj_bbox[3] + width*random.uniform(0, 2))))
+        y_crops = (int(max(0.0,  obj_bbox[0] - height*random.uniform(0, 2))), int(min(img.size[1],  obj_bbox[2] + height*random.uniform(0, 2))))
+        print(img[x_crops[0]:x_crops[1],y_crops[0]:y_crops[1]])
+        img = img.crop((x_crops[0], y_crops[0], x_crops[1], y_crops[1]))
+        c_width, c_height = img.size
+        img_scale = min(anno['target_size'] / c_width, anno['target_size'] / c_height)
+        img = img.resize((img_scale*c_width, img_scale*c_height), self.interpolation)
+        new_img = Image.new("RGB", (anno['target_size'], anno['target_size']), color=self.fill_color)
+        new_img.paste(img)
+
+        bbox = anno['bbox'].copy()
+        bbox[:, :4] *= img_scale
+        box_offset = np.stack([y_crops[0], x_crops[0]] * 2)
+        bbox -= box_offset
+        clip_boxes_(bbox, (int(img_scale*c_height), int(img_scale*c_width)))
+        valid_indices = (bbox[:, :2] < bbox[:, 2:4]).all(axis=1)
+        anno['bbox'] = bbox[valid_indices, :]
+        anno['cls'] = anno['cls'][valid_indices]
+        anno['valid_indices'] = valid_indices
+
+        anno['img_scale'] = 1. / img_scale  # back to original
+
+        print(img_scale)
+        print(new_img)
+        print(anno['bbox'])
+        print(anno['cls'])
+
+        return new_img, anno
+
 
 class RandomResizePad:
 
@@ -240,6 +289,28 @@ class Compose:
             img, annotations = t(img, annotations, scale=scale)
         return img, annotations
 
+
+def transforms_projection(
+        img_size=224,
+        interpolation='bilinear',
+        use_prefetcher=False,
+        fill_color='mean',
+        mean=IMAGENET_DEFAULT_MEAN,
+        std=IMAGENET_DEFAULT_STD):
+
+    fill_color = resolve_fill_color(fill_color, mean)
+
+    image_tfl = [
+        RandomFlip(horizontal=True, prob=0.5),
+        ProjResizePad(
+            target_size=img_size, interpolation=interpolation, fill_color=fill_color),
+        ImageToNumpy(),
+    ]
+
+    assert use_prefetcher, "Only supporting prefetcher usage right now"
+
+    image_tf = Compose(image_tfl)
+    return image_tf
 
 def transforms_coco_eval(
         img_size=224,
