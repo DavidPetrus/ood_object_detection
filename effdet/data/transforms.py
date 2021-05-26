@@ -124,22 +124,24 @@ class ProjResizePad:
         print(anno['bbox'])
         print(anno['cls'])
         task_id = anno['cls_id']
-        obj_bbox = np.random.choice(anno['bbox'][(anno['cls'] == task_id)],1)[0]
-        width, height = (obj_bbox[3]-obj_bbox[1], obj_bbox[2]-obj_bbox[0])
-        x_crops = (int(max(0.0,  obj_bbox[1] - width*random.uniform(0, 2))), int(min(img.size[0],  obj_bbox[3] + width*random.uniform(0, 2))))
-        y_crops = (int(max(0.0,  obj_bbox[0] - height*random.uniform(0, 2))), int(min(img.size[1],  obj_bbox[2] + height*random.uniform(0, 2))))
-        print(img[x_crops[0]:x_crops[1],y_crops[0]:y_crops[1]])
+        cls_bboxes = anno['bbox'][(anno['cls'] == task_id)]
+        obj_bbox = cls_bboxes[np.random.randint(cls_bboxes.shape[0],size=1)[0]]
+        width, height = (max(obj_bbox[3]-obj_bbox[1],50), max(obj_bbox[2]-obj_bbox[0],50))
+        x_crops = (int(max(0.0,  obj_bbox[1] - width*random.uniform(0.5, 2))), int(min(img.size[0],  obj_bbox[3] + width*random.uniform(0.5, 2))))
+        y_crops = (int(max(0.0,  obj_bbox[0] - height*random.uniform(0.5, 2))), int(min(img.size[1],  obj_bbox[2] + height*random.uniform(0.5, 2))))
         img = img.crop((x_crops[0], y_crops[0], x_crops[1], y_crops[1]))
+        print(img)
+        print(obj_bbox, x_crops, y_crops)
         c_width, c_height = img.size
         img_scale = min(anno['target_size'] / c_width, anno['target_size'] / c_height)
-        img = img.resize((img_scale*c_width, img_scale*c_height), self.interpolation)
+        img = img.resize((int(img_scale*c_width), int(img_scale*c_height)), self.interpolation)
         new_img = Image.new("RGB", (anno['target_size'], anno['target_size']), color=self.fill_color)
         new_img.paste(img)
 
         bbox = anno['bbox'].copy()
-        bbox[:, :4] *= img_scale
         box_offset = np.stack([y_crops[0], x_crops[0]] * 2)
         bbox -= box_offset
+        bbox[:, :4] *= img_scale
         clip_boxes_(bbox, (int(img_scale*c_height), int(img_scale*c_width)))
         valid_indices = (bbox[:, :2] < bbox[:, 2:4]).all(axis=1)
         anno['bbox'] = bbox[valid_indices, :]

@@ -94,6 +94,12 @@ def new_focal_loss(logits, targets, alpha: float, gamma: float, normalizer, labe
     else:
         return (1 / normalizer) * loss
 
+def cosine_loss(input, target, margin=0., reduction='mean'):
+    mask = target == 1.
+    loss = torch.where(mask, 1-input, input-margin)
+    loss[loss < 0.] = 0.
+    return loss.mean()
+
 
 def huber_loss(
         input, target, delta: float = 1., weights: Optional[torch.Tensor] = None, size_average: bool = True):

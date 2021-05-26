@@ -14,7 +14,7 @@ from effdet.config.model_config import default_detection_model_configs
 from effdet.distributed import all_gather_container
 from effdet.bench import _post_process
 from effdet.anchors import Anchors, AnchorLabeler, generate_detections
-from effdet.loss import DetectionLoss, SupportLoss, smooth_l1_loss, l2_loss
+from effdet.loss import DetectionLoss, SupportLoss, smooth_l1_loss, l2_loss, cosine_loss
 from effdet.evaluation.detection_evaluator import ObjectDetectionEvaluator
 
 
@@ -363,7 +363,7 @@ def main(argv):
                 proj_labs = []
                 confs = []
                 level_ix = 0
-                for level_embds_c,labs,lev_confs_c in zip(obj_embds[0:], proj_cls_anchors[0:], class_out[0:]):
+                for level_embds_c,labs,lev_confs_c in zip(obj_embds[0:], proj_cls_anchors[FLAGS.supp_level_offset:], class_out[0:]):
                     level_embds = level_embds_c.movedim(1,3)
                     lev_confs = lev_confs_c.movedim(1,3).reshape(-1)
                     lev_enc = proj_net.lev_enc[level_ix].reshape(1,1,-1).repeat(level_embds.shape[0],level_embds.shape[1],level_embds.shape[2],1).reshape(-1, 6)
@@ -378,8 +378,7 @@ def main(argv):
 
                     if True:
                         res_conf = lev_confs.reshape(FLAGS.num_qry,-1)
-                        labs = labs.reshape(FLAGS.num_qry,-1)
-                        if level_conf.shape[2] <= 4:
+                        if lev_confs_c.shape[2] <= 4:
                             mask = res_conf > -1000.
                         else:
                             with torch.no_grad():
@@ -391,7 +390,8 @@ def main(argv):
                                     mask = res_conf > q
 
                         lev_confs = res_conf[mask].reshape(FLAGS.num_qry, -1)
-                        feed_embds = feed_embds.reshape(FLAGS.num_qry, -1, feed_embds.shape[-1])
+                        feed_embds = feed_embds.reshape(FLAGS.num_qry, -1, feed_embds.shape[-1])[mask].reshape(FLAGS.num_qry, -1, feed_embds.shape[-1])
+                        labs = labs.reshape(FLAGS.num_qry,-1)[mask].reshape(FLAGS.num_qry,-1)
                     else:
                         labs = labs.reshape(-1)
                         if FLAGS.proj_all_objs:
@@ -450,23 +450,23 @@ def main(argv):
                         mask = torch.logical_and(proj_labs.view(-1,1) == proj_labs.view(1,-1), proj_labs.view(1,-1)==cls_id)
                         sim_target = torch.where(mask,1.,-1.)
                         if FLAGS.loss_mode == 'separate':
-                            clust_loss = F.cosine_embedding_loss(target_clust, sim_target[max_idxs,max_idxs], reduction='mean', margin=FLAGS.margin)
-                            embds_loss = F.cosine_embedding_loss(soft_thresh_sig*all_max_sims_clust, 
+                            clust_loss = cosine_loss(target_clust, sim_target[max_idxs,max_idxs], reduction='mean', margin=FLAGS.margin)
+                            embds_loss = cosine_loss(soft_thresh_sig*all_max_sims_clust, 
                                 torch.gather(sim_target,1,all_max_idxs.reshape(1,-1)), reduction='mean', margin=FLAGS.margin)
                         elif FLAGS.loss_mode == 'same':
                             clust_loss = 0.
-                            embds_loss = F.cosine_embedding_loss(soft_thresh_sig*all_max_sims_clust*target_clust[all_max_idxs], 
+                            embds_loss = cosine_loss(soft_thresh_sig*all_max_sims_clust*target_clust[all_max_idxs], 
                                 torch.gather(sim_target,1,all_max_idxs.reshape(1,-1)), reduction='mean', margin=FLAGS.margin)
                         elif FLAGS.loss_mode == 'no_conf':
-                            clust_loss = F.cosine_embedding_loss(target_clust, sim_target[max_idxs,max_idxs], reduction='mean', margin=FLAGS.margin)
-                            embds_loss = F.cosine_embedding_loss(all_max_sims_clust, 
+                            clust_loss = cosine_loss(target_clust, sim_target[max_idxs,max_idxs], reduction='mean', margin=FLAGS.margin)
+                            embds_loss = cosine_loss(all_max_sims_clust, 
                                 torch.gather(sim_target,1,all_max_idxs.reshape(1,-1)), reduction='mean', margin=FLAGS.margin)
 
                         inner_target = soft_thresh_sig * target_clust[all_max_idxs] * all_max_sims_clust
                     elif FLAGS.sim_target == 'avg':
                         all_avg_sims_clust = sim_mat[:,max_idxs].mean(1)
                         sim_target = torch.where(proj_labs.reshape(-1)==cls_id, 1., -1.)
-                        embds_loss = F.cosine_embedding_loss(soft_thresh_sig*all_avg_sims_clust, sim_target, reduction='mean', margin=FLAGS.margin)
+                        embds_loss = cosine_loss(soft_thresh_sig*all_avg_sims_clust, sim_target, reduction='mean', margin=FLAGS.margin)
                         clust_loss = 0.
 
                         inner_target = soft_thresh_sig * all_avg_sims_clust
@@ -477,6 +477,7 @@ def main(argv):
                         other_obj_mask = torch.logical_and(proj_labs > -1, proj_labs != cls_id)
                         no_obj_mask = proj_labs == -1
                         proj_acc = 0.
+                        proj_loss = 0.
                         q_999 = 0.
                         q_99 = 0.
                         task_obj_loss = 0.

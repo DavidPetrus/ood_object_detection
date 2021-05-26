@@ -12,7 +12,7 @@ import os
 import glob
 import gc
 
-from effdet.data.transforms import transforms_coco_eval, transforms_coco_train, clip_boxes_
+from effdet.data.transforms import transforms_coco_eval, transforms_coco_train, transforms_projection, clip_boxes_
 from effdet.loss import DetectionLoss
 from effdet.anchors import Anchors, AnchorLabeler
 
@@ -62,6 +62,9 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
 
         self.anchors = Anchors.from_config(model_config)
         self.anchor_labeler = AnchorLabeler(self.anchors, self.n_way, match_threshold=0.5)
+
+        self.proj_anchors = Anchors.from_config(model_config, img_size=256)
+        self.proj_anchor_labeler = AnchorLabeler(self.proj_anchors, self.n_way, match_threshold=0.5)
 
         self.transform = transforms_coco_eval(self.qry_img_size,interpolation='bilinear',use_prefetcher=True)
 
@@ -163,8 +166,8 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                     qry_bbox_ls.append(torch.from_numpy(target['bbox'][cat_idxs]))
                     qry_cls_ls.append(torch.from_numpy(np.ones(len(cat_idxs),dtype=target['cls'].dtype)))
 
-                    target['cls_id'] = task_cls_id
-                    proj_trans,proj_target = self.proj_transform(img_trans,target)
+                    proj_target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 256,'cls_id': task_cls_id}
+                    proj_trans,proj_target = self.proj_transform(img_load, proj_target)
                     proj_img_batch.append(torch.from_numpy(proj_trans))
                     proj_bbox_ls.append(torch.from_numpy(proj_target['bbox']))
                     proj_cls_ls.append(torch.from_numpy(proj_target['cls']+1))
@@ -204,12 +207,11 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
             q_cls_targets, q_box_targets, q_num_positives = self.anchor_labeler.batch_label_anchors(qry_bbox_ls, qry_cls_ls)
             query_lab_batch = {'cls':qry_cls_ls, 'bbox': qry_bbox_ls, 'cls_anchor':q_cls_targets, 'bbox_anchor':q_box_targets, 'num_positives':q_num_positives}
 
-            p_cls_targets, p_box_targets, p_num_positives = self.anchor_labeler.batch_label_anchors(proj_bbox_ls, proj_cls_ls)
+            p_cls_targets, p_box_targets, p_num_positives = self.proj_anchor_labeler.batch_label_anchors(proj_bbox_ls, proj_cls_ls, task_cls=task_cls_id+1)
             proj_lab_batch = {'cls':proj_cls_ls, 'bbox': proj_bbox_ls, 'cls_anchor':p_cls_targets, 'bbox_anchor':p_box_targets, 'num_positives':p_num_positives}
 
             #yield list(map(torch.stack, zip(*support_img_batch))), supp_cls_lab, list(map(torch.stack, zip(*query_img_batch))), query_lab_batch, task_cats, val_iter
-            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, torch.stack(proj_img_batch), proj_lab_batch, 
-                task_cats, task_cls_id, val_iter
+            yield torch.stack(support_img_batch), supp_cls_lab, torch.stack(query_img_batch), query_lab_batch, torch.stack(proj_img_batch), proj_lab_batch, task_cats, task_cls_id, val_iter
 
 
 def load_metadata_dicts(base_path):

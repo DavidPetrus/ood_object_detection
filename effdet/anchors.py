@@ -234,11 +234,17 @@ class Anchors(nn.Module):
         self.register_buffer('boxes', self._generate_boxes())
 
     @classmethod
-    def from_config(cls, config):
-        return cls(
-            config.min_level, config.max_level,
-            config.num_scales, config.aspect_ratios,
-            config.anchor_scale, config.image_size)
+    def from_config(cls, config, img_size=None):
+        if img_size is None:
+            return cls(
+                config.min_level, config.max_level,
+                config.num_scales, config.aspect_ratios,
+                config.anchor_scale, config.image_size)
+        else:
+            return cls(
+                config.min_level, config.max_level,
+                config.num_scales, config.aspect_ratios,
+                config.anchor_scale, (img_size,img_size))
 
     def _generate_configs(self):
         """Generate configurations of anchor boxes."""
@@ -375,7 +381,7 @@ class AnchorLabeler(object):
 
         return cls_targets_out, box_targets_out, num_positives
 
-    def batch_label_anchors(self, gt_boxes, gt_classes, filter_valid=True):
+    def batch_label_anchors(self, gt_boxes, gt_classes, filter_valid=True, task_cls=None):
         batch_size = len(gt_boxes)
         assert batch_size == len(gt_classes)
         num_levels = self.anchors.max_level - self.anchors.min_level + 1
@@ -387,6 +393,18 @@ class AnchorLabeler(object):
         for i in range(batch_size):
             last_sample = i == batch_size - 1
 
+            if not task_cls is None:
+                print("---------------------")
+                print(gt_classes[i])
+                task_obj_mask = gt_classes[i] == task_cls
+                task_obj_list = BoxList(gt_boxes[i][task_obj_mask])
+                box_sims = self.target_assigner.similarity_calc.compare(task_obj_list, gt_box_list)
+                print(box_sims.shape)
+                overlapping_boxes = (box_sims[:,~task_obj_mask] > 0.9).max(0)
+                print(overlapping_boxes)
+                gt_classes[i][~task_obj_mask][overlapping_boxes] = task_cls
+                print(gt_classes[i])
+
             if filter_valid:
                 valid_idx = gt_classes[i] > -1  # filter gt targets w/ label <= -1
                 gt_box_list = BoxList(gt_boxes[i][valid_idx])
@@ -394,6 +412,7 @@ class AnchorLabeler(object):
             else:
                 gt_box_list = BoxList(gt_boxes[i])
                 gt_class_i = gt_classes[i]
+
             cls_targets, box_targets, matches = self.target_assigner.assign(anchor_box_list, gt_box_list, gt_class_i)
 
             # class labels start from 1 and the background class = -1
