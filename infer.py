@@ -51,7 +51,7 @@ flags.DEFINE_integer('pretrain_classes',400,'')
 flags.DEFINE_string('load_ckpt','d3_aug1.26.pth','')
 flags.DEFINE_bool('separate_head',False,'')
 flags.DEFINE_float('meta_clip',10.,'')
-flags.DEFINE_float('sim_thresh',0.3,'')
+flags.DEFINE_float('sim_thresh',0.2,'')
 flags.DEFINE_float('margin',0.,'')
 flags.DEFINE_string('loss_mode','separate','separate, same, no_conf')
 flags.DEFINE_string('sim_target','max','')
@@ -300,7 +300,7 @@ def main(argv):
     best_loss = 1000.
     #with torch.autograd.detect_anomaly():
     for task in loader:
-        supp_imgs, supp_cls_labs, qry_imgs, qry_labs, proj_imgs, proj_labs, task_cats, cls_id, val_iter = task
+        supp_imgs, supp_cls_labs, qry_imgs, qry_labs, proj_imgs, proj_labs_load, task_cats, cls_id, val_iter = task
 
         if t_ix == 0 or val_iter: meta_optimizer.zero_grad()
 
@@ -311,9 +311,9 @@ def main(argv):
         qry_bbox_anchors = [bbox_anchor.to('cuda') for bbox_anchor in qry_labs['bbox_anchor']]
         qry_num_positives = qry_labs['num_positives'].to('cuda')
 
-        proj_cls_anchors = [cls_anchor.to('cuda') for cls_anchor in proj_labs['cls_anchor']]
-        proj_bbox_anchors = [bbox_anchor.to('cuda') for bbox_anchor in proj_labs['bbox_anchor']]
-        proj_num_positives = proj_labs['num_positives'].to('cuda')
+        proj_cls_anchors = [cls_anchor.to('cuda') for cls_anchor in proj_labs_load['cls_anchor']]
+        proj_bbox_anchors = [bbox_anchor.to('cuda') for bbox_anchor in proj_labs_load['bbox_anchor']]
+        proj_num_positives = proj_labs_load['num_positives'].to('cuda')
         
         if train_iter > FLAGS.proj_iters:
             supp_imgs = (supp_imgs.to('cuda').float()-imagenet_mean)/imagenet_std
@@ -363,7 +363,7 @@ def main(argv):
                 proj_labs = []
                 confs = []
                 level_ix = 0
-                for level_embds_c,labs,lev_confs_c in zip(obj_embds[0:], proj_cls_anchors[FLAGS.supp_level_offset:], class_out[0:]):
+                for level_embds_c,labs,lev_confs_c in zip(obj_embds[0:], proj_cls_anchors[0:], class_out[0:]):
                     level_embds = level_embds_c.movedim(1,3)
                     lev_confs = lev_confs_c.movedim(1,3).reshape(-1)
                     lev_enc = proj_net.lev_enc[level_ix].reshape(1,1,-1).repeat(level_embds.shape[0],level_embds.shape[1],level_embds.shape[2],1).reshape(-1, 6)
@@ -434,8 +434,8 @@ def main(argv):
                     arange = torch.arange(0, sim_mat.shape[0], weighted_sim.shape[1], device='cuda')
                     max_idxs = arange + max_idxs
                     init_cluster = sim_mat[max_idxs][:,max_idxs]
-                    avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
-                    valid = avg_init > FLAGS.sim_thresh
+                    avg_init = init_cluster.mean(1) - 1./FLAGS.num_qry
+                    valid = avg_init > avg_init.mean()
 
                     target_clust = sim_mat[:,max_idxs[valid]].mean(1)
                     img_avg_sims_clust = weighted_sim[:,:,max_idxs[valid]].mean(2)
@@ -443,7 +443,7 @@ def main(argv):
                     max_idxs = arange + max_idxs
                     target_clust = target_clust[max_idxs]
                     init_cluster = sim_mat[max_idxs][:,max_idxs]
-                    avg_init = init_cluster.mean(1) - 1./FLAGS.num_sup
+                    avg_init = init_cluster.mean(1) - 1./FLAGS.num_qry
 
                     if FLAGS.sim_target == 'max':
                         all_max_sims_clust, all_max_idxs = torch.max(sim_mat[:,max_idxs], dim=1)
@@ -483,8 +483,7 @@ def main(argv):
                         task_obj_loss = 0.
 
                         task_obj_mean = inner_target[task_obj_mask].mean()
-                        #task_obj_min = inner_target[task_obj_mask].min()
-                        task_obj_min = 0.
+                        task_obj_min = inner_target[task_obj_mask].min()
                         if other_obj_mask.sum() > 0:
                             other_obj_mean = inner_target[other_obj_mask].mean()
                             other_obj_max = inner_target[other_obj_mask].max()
@@ -494,7 +493,9 @@ def main(argv):
                     obj_target = (proj_labs > -1).float()
                     obj_loss = F.binary_cross_entropy_with_logits(soft_thresh, obj_target, reduction='sum')
 
-                    print(obj_loss, clust_loss, embds_loss)
+                    print("Obj Loss: {}, Clust Loss: {}, Embds Loss: {}".format(obj_loss, clust_loss, embds_loss))
+                    print("Task Mean: {}, Task Min: {}, Other Mean: {}, Other Max: {}, NoObj Mean: {}, NoObj Max: {}".format(
+                        task_obj_mean, task_obj_min, other_obj_mean, other_obj_max, no_obj_mean, no_obj_max))
                 else:
                     task_obj_idxs = proj_labs==cls_id
                     if task_obj_idxs.sum() > 1.:

@@ -63,7 +63,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
         self.anchors = Anchors.from_config(model_config)
         self.anchor_labeler = AnchorLabeler(self.anchors, self.n_way, match_threshold=0.5)
 
-        self.proj_anchors = Anchors.from_config(model_config, img_size=256)
+        self.proj_anchors = Anchors.from_config(model_config, img_size=256, min_level=FLAGS.supp_level_offset)
         self.proj_anchor_labeler = AnchorLabeler(self.proj_anchors, self.n_way, match_threshold=0.5)
 
         self.transform = transforms_coco_eval(self.qry_img_size,interpolation='bilinear',use_prefetcher=True)

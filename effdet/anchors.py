@@ -234,15 +234,15 @@ class Anchors(nn.Module):
         self.register_buffer('boxes', self._generate_boxes())
 
     @classmethod
-    def from_config(cls, config, img_size=None):
+    def from_config(cls, config, img_size=None, min_level=0):
         if img_size is None:
             return cls(
-                config.min_level, config.max_level,
+                config.min_level+min_level, config.max_level,
                 config.num_scales, config.aspect_ratios,
                 config.anchor_scale, config.image_size)
         else:
             return cls(
-                config.min_level, config.max_level,
+                config.min_level+min_level, config.max_level,
                 config.num_scales, config.aspect_ratios,
                 config.anchor_scale, (img_size,img_size))
 

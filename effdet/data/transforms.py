@@ -132,6 +132,7 @@ class ProjResizePad:
             x_crops = (int(max(0.0,  obj_bbox[1] - width*random.uniform(0.5, 2))), int(min(img.size[0],  obj_bbox[3] + width*random.uniform(0.5, 2))))
             y_crops = (int(max(0.0,  obj_bbox[0] - height*random.uniform(0.5, 2))), int(min(img.size[1],  obj_bbox[2] + height*random.uniform(0.5, 2))))
             if x_crops[1]-x_crops[0] < 50 or y_crops[1]-y_crops[0] < 50:
+                print('----------------------------',ix)
                 if ix==2:
                     x_crops = (0., img.size[0]-1)
                     y_crops = (0., img.size[1]-1)
