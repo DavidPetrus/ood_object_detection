@@ -483,7 +483,8 @@ def main(argv):
                         task_obj_loss = 0.
 
                         task_obj_mean = inner_target[task_obj_mask].mean()
-                        task_obj_min = inner_target[task_obj_mask].min()
+                        #task_obj_min = inner_target[task_obj_mask].min()
+                        task_obj_min = 0.
                         if other_obj_mask.sum() > 0:
                             other_obj_mean = inner_target[other_obj_mask].mean()
                             other_obj_max = inner_target[other_obj_mask].max()

@@ -144,7 +144,7 @@ class MetaEpicDataset(torch.utils.data.IterableDataset):
                     img_bboxes = np.concatenate([img_bboxes[:,1:2],img_bboxes[:,0:1],img_bboxes[:,3:],img_bboxes[:,2:3]],axis=1)
                     
                     #img_cats = np.asarray(self.lvis_cats[img_path])[cat_idxs]
-                    target = {'bbox': img_bboxes, 'cls': img_cat_ids, 'target_size': 640}
+                    target = {'bbox': img_bboxes.copy(), 'cls': img_cat_ids, 'target_size': 640}
                     img_load = Image.open(img_path).convert('RGB')
                     if not val_iter:
                         img_trans,target = self.train_transform(img_load,target,(0.4,1.7))

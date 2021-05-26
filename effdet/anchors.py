@@ -394,16 +394,13 @@ class AnchorLabeler(object):
             last_sample = i == batch_size - 1
 
             if not task_cls is None:
-                print("---------------------")
-                print(gt_classes[i])
                 task_obj_mask = gt_classes[i] == task_cls
-                task_obj_list = BoxList(gt_boxes[i][task_obj_mask])
-                box_sims = self.target_assigner.similarity_calc.compare(task_obj_list, gt_box_list)
-                print(box_sims.shape)
-                overlapping_boxes = (box_sims[:,~task_obj_mask] > 0.9).max(0)
-                print(overlapping_boxes)
-                gt_classes[i][~task_obj_mask][overlapping_boxes] = task_cls
-                print(gt_classes[i])
+                if (~task_obj_mask).sum() > 0:
+                    gt_box_list = BoxList(gt_boxes[i])
+                    task_obj_list = BoxList(gt_boxes[i][task_obj_mask])
+                    box_sims = self.target_assigner._similarity_calc.compare(task_obj_list, gt_box_list)
+                    overlapping_boxes,__ = (box_sims > 0.9).max(0)
+                    gt_classes[i][overlapping_boxes] = task_cls
 
             if filter_valid:
                 valid_idx = gt_classes[i] > -1  # filter gt targets w/ label <= -1

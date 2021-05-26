@@ -120,18 +120,26 @@ class ProjResizePad:
 
 
     def __call__(self, img, anno: dict, scale=None):
-        print("------------------------")
-        print(anno['bbox'])
-        print(anno['cls'])
+        #print("------------------------")
+        #print(anno['bbox'])
+        #print(anno['cls'])
+        #print(img.size)
         task_id = anno['cls_id']
         cls_bboxes = anno['bbox'][(anno['cls'] == task_id)]
-        obj_bbox = cls_bboxes[np.random.randint(cls_bboxes.shape[0],size=1)[0]]
-        width, height = (max(obj_bbox[3]-obj_bbox[1],50), max(obj_bbox[2]-obj_bbox[0],50))
-        x_crops = (int(max(0.0,  obj_bbox[1] - width*random.uniform(0.5, 2))), int(min(img.size[0],  obj_bbox[3] + width*random.uniform(0.5, 2))))
-        y_crops = (int(max(0.0,  obj_bbox[0] - height*random.uniform(0.5, 2))), int(min(img.size[1],  obj_bbox[2] + height*random.uniform(0.5, 2))))
+        for ix in range(3):
+            obj_bbox = cls_bboxes[np.random.randint(cls_bboxes.shape[0],size=1)[0]]
+            width, height = (max(obj_bbox[3]-obj_bbox[1],50), max(obj_bbox[2]-obj_bbox[0],50))
+            x_crops = (int(max(0.0,  obj_bbox[1] - width*random.uniform(0.5, 2))), int(min(img.size[0],  obj_bbox[3] + width*random.uniform(0.5, 2))))
+            y_crops = (int(max(0.0,  obj_bbox[0] - height*random.uniform(0.5, 2))), int(min(img.size[1],  obj_bbox[2] + height*random.uniform(0.5, 2))))
+            if x_crops[1]-x_crops[0] < 50 or y_crops[1]-y_crops[0] < 50:
+                if ix==2:
+                    x_crops = (0., img.size[0]-1)
+                    y_crops = (0., img.size[1]-1)
+                continue
+            else:
+                break
+
         img = img.crop((x_crops[0], y_crops[0], x_crops[1], y_crops[1]))
-        print(img)
-        print(obj_bbox, x_crops, y_crops)
         c_width, c_height = img.size
         img_scale = min(anno['target_size'] / c_width, anno['target_size'] / c_height)
         img = img.resize((int(img_scale*c_width), int(img_scale*c_height)), self.interpolation)
@@ -150,10 +158,10 @@ class ProjResizePad:
 
         anno['img_scale'] = 1. / img_scale  # back to original
 
-        print(img_scale)
-        print(new_img)
-        print(anno['bbox'])
-        print(anno['cls'])
+        #print(img_scale)
+        #print(new_img)
+        #print(anno['bbox'])
+        #print(anno['cls'])
 
         return new_img, anno
 
